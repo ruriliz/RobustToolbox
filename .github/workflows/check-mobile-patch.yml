@@ -1,0 +1,37 @@
+name: Check Mobile Patch on Engine 277
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-patch:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout RobustToolbox Mobile
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Verify engine version
+        run: |
+          git -C RobustToolbox rev-parse HEAD
+          test "$(git -C RobustToolbox rev-parse HEAD)" = \
+            "08a3d120b7029d03e60b44b23fed2b2659ed3224"
+
+      - name: Check Android patch compatibility
+        run: |
+          git -C RobustToolbox apply \
+            --check ../patches/mobile.patch
+
+      - name: Apply Android patch
+        run: |
+          git -C RobustToolbox apply \
+            ../patches/mobile.patch
+
+      - name: Confirm success
+        run: |
+          echo "Mobile patch applies to RobustToolbox 277"
