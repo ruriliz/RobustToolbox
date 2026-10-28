@@ -1,0 +1,60 @@
+
+name: Diagnose Android Patch 277
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout engine and submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Analyze patch conflicts
+        shell: bash
+        run: |
+          mkdir -p diagnostics
+
+          git -C RobustToolbox rev-parse HEAD \
+            > diagnostics/engine-commit.txt
+
+          # Attempt partial application, preserving rejected hunks.
+          git -C RobustToolbox apply \
+            --reject --verbose \
+            ../patches/mobile.patch \
+            > diagnostics/apply.log 2>&1 || true
+
+          # Collect rejected hunks.
+          find RobustToolbox -name '*.rej' -type f \
+            -print > diagnostics/rejected-files.txt
+
+          while IFS= read -r file; do
+            mkdir -p "diagnostics/rejects/$(dirname "$file")"
+            cp "$file" "diagnostics/rejects/$file"
+          done < diagnostics/rejected-files.txt
+
+          # Record changed files.
+          git -C RobustToolbox status --short \
+            > diagnostics/git-status.txt
+
+          echo "=== Rejected files ==="
+          cat diagnostics/rejected-files.txt
+
+          echo "=== Summary ==="
+          wc -l diagnostics/rejected-files.txt
+
+      - name: Upload diagnostic archive
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: robusttoolbox-277-patch-diagnostics
+          path: diagnostics/
+          if-no-files-found: error
