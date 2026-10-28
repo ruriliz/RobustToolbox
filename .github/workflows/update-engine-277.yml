@@ -1,0 +1,41 @@
+
+name: Update RobustToolbox to 277
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          submodules: false
+          persist-credentials: true
+
+      - name: Update engine submodule
+        run: |
+          git submodule update --init RobustToolbox
+          git -C RobustToolbox fetch origin 08a3d120b7029d03e60b44b23fed2b2659ed3224
+          git -C RobustToolbox checkout 08a3d120b7029d03e60b44b23fed2b2659ed3224
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add RobustToolbox
+
+          if git diff --cached --quiet; then
+            echo "Engine already at requested commit"
+            exit 0
+          fi
+
+          git commit -m "Update RobustToolbox engine to 277.0.0"
+          git push origin HEAD:master
