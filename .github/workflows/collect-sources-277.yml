@@ -1,0 +1,65 @@
+name: Collect Mobile Patch Sources 277
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout engine
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Collect source files and conflicts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p bundle
+
+          git -C RobustToolbox rev-parse HEAD \
+            > bundle/engine-commit.txt
+
+          cp patches/mobile.patch bundle/mobile.patch
+
+          # Apply compatible hunks and save rejected ones.
+          git -C RobustToolbox apply \
+            --reject --verbose \
+            ../patches/mobile.patch \
+            > bundle/apply.log 2>&1 || true
+
+          find RobustToolbox -type f -name '*.rej' \
+            > bundle/rejected-files.txt
+
+          # Collect full source files for every rejection.
+          while IFS= read -r rejected; do
+            source="${rejected%.rej}"
+
+            if [ -f "$source" ]; then
+              mkdir -p "bundle/$(dirname "$source")"
+              cp "$source" "bundle/$source"
+            fi
+
+            mkdir -p "bundle/$(dirname "$rejected")"
+            cp "$rejected" "bundle/$rejected"
+          done < bundle/rejected-files.txt
+
+          git -C RobustToolbox status --short \
+            > bundle/git-status.txt
+
+          echo "Files collected:"
+          find bundle -type f | sort
+
+      - name: Upload source archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobile-277-source-bundle
+          path: bundle/
+          retention-days: 7
