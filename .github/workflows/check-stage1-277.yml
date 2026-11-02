@@ -20,12 +20,14 @@ jobs:
           test "$(git -C RobustToolbox rev-parse HEAD)" = \
             "08a3d120b7029d03e60b44b23fed2b2659ed3224"
 
+      
       - name: Check partial patch
         run: |
           git -C RobustToolbox apply \
-            --check ../mobile-277-stage1.patch
+            --check ../patches/mobile-277-stage1.patch
 
       - name: Apply partial patch
         run: |
           git -C RobustToolbox apply \
-            ../mobile-277-stage1.patch
+            ../patches/mobile-277-stage1.patch
+
