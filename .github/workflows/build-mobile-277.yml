@@ -1,0 +1,63 @@
+
+name: Build Mobile 277
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Verify engine version
+        run: |
+          test "$(git -C RobustToolbox rev-parse HEAD)" = \
+            "08a3d120b7029d03e60b44b23fed2b2659ed3224"
+
+      - name: Install .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Apply mobile patches
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for patch in \
+            mobile-277-stage1.patch \
+            mobile-277-stage2.patch \
+            mobile-277-stage3.patch \
+            mobile-277-stage4.patch \
+            mobile-277-stage5.patch
+          do
+            echo "::group::Applying $patch"
+            git -C RobustToolbox apply \
+              --check "../patches/$patch"
+            git -C RobustToolbox apply \
+              "../patches/$patch"
+            echo "::endgroup::"
+          done
+
+      - name: Restore dependencies
+        working-directory: RobustToolbox
+        run: |
+          dotnet restore Robust.Client/Robust.Client.csproj
+
+      - name: Build Robust.Client
+        working-directory: RobustToolbox
+        run: |
+          dotnet build Robust.Client/Robust.Client.csproj \
+            --configuration Release \
+            --no-restore \
+            -p:UseSharedCompilation=false \
+            -v:minimal
