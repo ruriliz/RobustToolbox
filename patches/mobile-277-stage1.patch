@@ -627,27 +627,6 @@ index a183d7572..06c796db5 100644
                  return @enum;
  
              return keyString;
-diff --git a/Robust.Client/GameObjects/EntitySystems/SpriteSystem.Render.cs b/Robust.Client/GameObjects/EntitySystems/SpriteSystem.Render.cs
-index c3ca7a240..2879fe1c7 100644
---- a/Robust.Client/GameObjects/EntitySystems/SpriteSystem.Render.cs
-+++ b/Robust.Client/GameObjects/EntitySystems/SpriteSystem.Render.cs
-@@ -14,6 +14,16 @@ namespace Robust.Client.GameObjects;
- // This partial class contains code related to actually rendering sprites.
- public sealed partial class SpriteSystem
- {
-+    public void RenderSprite(
-+        Entity<SpriteComponent> sprite,
-+        DrawingHandleWorld drawingHandle,
-+        Angle eyeRotation,
-+        Angle worldRotation,
-+        Vector2 worldPosition)
-+    {
-+        RenderSprite(sprite, drawingHandle, eyeRotation, worldRotation, worldPosition, (IReadOnlyList<SpriteComponent.PostShaderEntry>?)null);
-+    }
-+
-     public void RenderSprite(
-         Entity<SpriteComponent> sprite,
-         DrawingHandleWorld drawingHandle,
 diff --git a/Robust.Client/Graphics/Clyde/Clyde.Shaders.cs b/Robust.Client/Graphics/Clyde/Clyde.Shaders.cs
 index 1dc619dc7..632fd50ee 100644
 --- a/Robust.Client/Graphics/Clyde/Clyde.Shaders.cs
