@@ -880,7 +880,7 @@ index e4aeda9a1..8c7134099 100644
 +                var isUI = _uiMgr.MouseGetControl(MouseScreenPosition) != null;
 +                if (!isUI)
 +                {
-+                    args = new KeyEventArgs(Key.MouseRight, args.IsRepeat, args.Alt, args.Control, args.Shift, args.System, args.ScanCode, args.RawCode, args.AltGr);
++                    args = new KeyEventArgs(Key.MouseRight, args.IsRepeat, args.Alt, args.Control, args.Shift, args.System, args.ScanCode, args.RawCode);
 +                    MobileControlsOverlay.ResetSecondaryMode();
 +                }
 +            }
@@ -927,7 +927,7 @@ index e4aeda9a1..8c7134099 100644
  
 +            if (OperatingSystem.IsAndroid() && args.Key == Key.MouseLeft && _keysPressed[(int)Key.MouseRight] && !_keysPressed[(int)Key.MouseLeft])
 +            {
-+                args = new KeyEventArgs(Key.MouseRight, args.IsRepeat, args.Alt, args.Control, args.Shift, args.System, args.ScanCode, args.RawCode, args.AltGr);
++                args = new KeyEventArgs(Key.MouseRight, args.IsRepeat, args.Alt, args.Control, args.Shift, args.System, args.ScanCode, args.RawCode);
 +            }
 +
              FirstChanceOnKeyEvent?.Invoke(args, KeyEventType.Up);
