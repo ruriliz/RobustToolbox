@@ -1,0 +1,60 @@
+diff --git a/Resources/Shaders/Internal/light_shared.swsl b/Resources/Shaders/Internal/light_shared.swsl
+--- a/Resources/Shaders/Internal/light_shared.swsl
++++ b/Resources/Shaders/Internal/light_shared.swsl
+@@ -42,10 +42,11 @@
+     // Totally not hacky PCF on top of VSM.
+     highp float occlusion = lightIndex < 0.0 ? 1.0 : createOcclusion(diff);
+ 
+-    if (occlusion == 0.0)
++    if (!(occlusion > 0.0))
+     {
+         discard;
+     }
++    occlusion = clamp(occlusion, 0.0, 1.0);
+ 
+     // this implementation of light attenuation primarily adapted from
+     // https://lisyarus.github.io/blog/posts/point-light-attenuation.html
+diff --git a/Robust.Client/Graphics/Clyde/Shaders/base-default.vert b/Robust.Client/Graphics/Clyde/Shaders/base-default.vert
+--- a/Robust.Client/Graphics/Clyde/Shaders/base-default.vert
++++ b/Robust.Client/Graphics/Clyde/Shaders/base-default.vert
+@@ -6,10 +6,10 @@
+ // Colour modulation.
+ /*layout (location = 3)*/ attribute vec4 modulate;
+ 
+-varying vec2 UV;
+-varying vec2 UV2;
+-varying vec2 Pos;
+-varying vec4 VtxModulate;
++varying highp vec2 UV;
++varying highp vec2 UV2;
++varying highp vec2 Pos;
++varying highp vec4 VtxModulate;
+ 
+ // Maybe we should merge these CPU side.
+ // idk yet.
+diff --git a/Robust.Client/Graphics/Clyde/Shaders/base-raw.vert b/Robust.Client/Graphics/Clyde/Shaders/base-raw.vert
+--- a/Robust.Client/Graphics/Clyde/Shaders/base-raw.vert
++++ b/Robust.Client/Graphics/Clyde/Shaders/base-raw.vert
+@@ -6,8 +6,8 @@
+ // Colour modulation.
+ /*layout (location = 3)*/ attribute vec4 modulate;
+ 
+-varying vec2 UV;
+-varying vec2 UV2;
++varying highp vec2 UV;
++varying highp vec2 UV2;
+ 
+ // Maybe we should merge these CPU side.
+ // idk yet.
+diff --git a/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs b/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
+--- a/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
++++ b/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
+@@ -33,7 +33,7 @@
+ 
+         // Horizontal width, in pixels, of the shadow maps used to render FOV.
+         // I figured this was more accuracy sensitive than lights so resolution is significantly higher.
+-        private const int FovMapSize = 2048;
++        private static int FovMapSize => OperatingSystem.IsAndroid() ? 512 : 2048;
+ 
+         private ClydeShaderInstance _fovDebugShaderInstance = default!;
+ 
