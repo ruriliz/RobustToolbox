@@ -2959,22 +2959,6 @@ index e2679c779..84421b983 100644
      [ImplicitDataDefinitionForInheritors]
      public abstract partial class Component : IComponent
      {
-@@ -67,6 +68,15 @@ namespace Robust.Shared.GameObjects
- 
-         public virtual bool SessionSpecific => false;
- 
-+        [Obsolete("Use ISerializationManager.CopyTo instead")]
-+        public virtual void InternalCopy(
-+            ref Component target,
-+            Robust.Shared.Serialization.Manager.ISerializationManager serialization,
-+            Robust.Shared.Serialization.SerializationHookContext hookCtx,
-+            Robust.Shared.Serialization.Manager.ISerializationContext? context = null)
-+        {
-+        }
-+
-         /// <inheritdoc />
-         [ViewVariables]
-         public bool Initialized => LifeStage >= ComponentLifeStage.Initializing;
 diff --git a/Robust.Shared/GameObjects/ComponentFactory.cs b/Robust.Shared/GameObjects/ComponentFactory.cs
 index 509cf09cd..7289da8df 100644
 --- a/Robust.Shared/GameObjects/ComponentFactory.cs
@@ -3120,7 +3104,7 @@ diff --git a/Robust.Shared/Localization/LocalizationManager.cs b/Robust.Shared/L
 index 69e28e861..c6c10962a 100644
 --- a/Robust.Shared/Localization/LocalizationManager.cs
 +++ b/Robust.Shared/Localization/LocalizationManager.cs
-@@ -429,14 +429,36 @@ namespace Robust.Shared.Localization
+@@ -429,14 +429,33 @@ namespace Robust.Shared.Localization
              foreach (var culture in cultures)
              {
                  if (!_contexts.TryGetValue(culture, out var bundle))
@@ -3149,9 +3133,6 @@ index 69e28e861..c6c10962a 100644
              _fallbackCultures = tuples;
          }
  
-+        [Obsolete("Use SetFallbackCulture instead")]
-+        public void SetFallbackCluture(params CultureInfo[] cultures) => SetFallbackCulture(cultures);
-+
 +        [Obsolete("Use SetFallbackCulture instead")]
 +        public void SetFallbackCluture(CultureInfo culture) => SetFallbackCulture(culture);
 +
