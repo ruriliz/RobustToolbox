@@ -1,0 +1,44 @@
+diff --git a/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
+--- a/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
++++ b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
+@@ -122,6 +122,24 @@
+     private string _lastSelectedQuickKey = "";
+ 
+     private bool _controlsHidden;
++    private bool _hardwareAutoHidden;
++    private bool _manualVisibilityOverride;
++    private bool _manualHidden;
++
++    /// <summary>
++    /// Receives physical device presence from the Android input integration.
++    /// This is a connection-state API, not a device detector.
++    /// </summary>
++    public void SetHardwareInputState(bool keyboardConnected, bool mouseConnected)
++    {
++        var autoHidden = keyboardConnected && mouseConnected;
++        if (_hardwareAutoHidden == autoHidden)
++            return;
++
++        _hardwareAutoHidden = autoHidden;
++        _manualVisibilityOverride = false;
++        ApplyControlsVisibility();
++    }
+     private readonly List<PojavActionButton> _allButtons = new();
+     private readonly List<PojavActionButton> _defaultButtons = new();
+     private readonly HashSet<string> _deletedButtonIds = new();
+@@ -642,7 +660,14 @@
+ 
+     private void ToggleControlsVisibility()
+     {
+-        _controlsHidden = !_controlsHidden;
++        _manualHidden = !_controlsHidden;
++        _manualVisibilityOverride = true;
++        ApplyControlsVisibility();
++    }
++
++    private void ApplyControlsVisibility()
++    {
++        _controlsHidden = _manualVisibilityOverride ? _manualHidden : _hardwareAutoHidden;
+         _clusterContainer.Visible = !_controlsHidden;
+         _hideButton.Text = _controlsHidden ? "SHOW" : "HIDE";
+     }
