@@ -52,4 +52,14 @@ jobs:
           git -C RobustToolbox apply \
             ../patches/mobile-277-stage3.patch
 
+      - name: Check Stage 4 patch
+        run: |
+          git -C RobustToolbox apply \
+            --check ../patches/mobile-277-stage4.patch
+
+      - name: Apply Stage 4 patch
+        run: |
+          git -C RobustToolbox apply \
+            ../patches/mobile-277-stage4.patch
+
 
