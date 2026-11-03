@@ -41,3 +41,15 @@ jobs:
           git -C RobustToolbox apply \
             ../patches/mobile-277-stage2.patch
 
+      
+      - name: Check Stage 3 patch
+        run: |
+          git -C RobustToolbox apply \
+            --check ../patches/mobile-277-stage3.patch
+
+      - name: Apply Stage 3 patch
+        run: |
+          git -C RobustToolbox apply \
+            ../patches/mobile-277-stage3.patch
+
+
