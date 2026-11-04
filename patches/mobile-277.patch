@@ -1,0 +1,2252 @@
+diff --git a/MSBuild/Robust.DefineConstants.targets b/MSBuild/Robust.DefineConstants.targets
+index f67e982..46cb749 100644
+--- a/MSBuild/Robust.DefineConstants.targets
++++ b/MSBuild/Robust.DefineConstants.targets
+@@ -11,6 +11,11 @@
+         <DefineConstants>$(DefineConstants);MACOS;UNIX</DefineConstants>
+       </PropertyGroup>
+     </When>
++    <When Condition="'$(TargetOS)' == 'Android'" >
++      <PropertyGroup>
++        <DefineConstants>$(DefineConstants);LINUX;UNIX;ANDROID</DefineConstants>
++      </PropertyGroup>
++    </When>
+     <Otherwise>
+       <PropertyGroup>
+         <DefineConstants>$(DefineConstants);LINUX;UNIX;FREEDESKTOP</DefineConstants>
+diff --git a/Resources/Shaders/Internal/fov-lighting.swsl b/Resources/Shaders/Internal/fov-lighting.swsl
+index 91bd980..f42e010 100644
+--- a/Resources/Shaders/Internal/fov-lighting.swsl
++++ b/Resources/Shaders/Internal/fov-lighting.swsl
+@@ -4,21 +4,24 @@ preset raw;
+ 
+ #include "/Shaders/Internal/fov_shared.swsl"
+ 
+-const highp float g_MinVariance = 0.0;
+ uniform highp vec4 occludeColor;
+ 
+ void fragment()
+ {
+     highp float ourDist = length(worldSpaceDiff);
++    if (ourDist < 0.0001)
++    {
++        discard;
++    }
+ 
+     highp vec2 occlDist = occludeDepth(worldSpaceDiff, TEXTURE, 0.25);
+ 
+-    highp float occlusion = ChebyshevUpperBound(occlDist, ourDist);
++    highp float occlusion = clamp(ChebyshevUpperBound(occlDist, ourDist), 0.0, 1.0);
+ 
+-    if (occlusion >= 1.0)
++    if (!(occlusion < 1.0))
+     {
+         discard;
+     }
+ 
+-    COLOR = vec4(occludeColor.rgb, 1.0 - occlusion);
++    COLOR = vec4(occludeColor.rgb, clamp(1.0 - occlusion, 0.0, 1.0));
+ }
+diff --git a/Resources/Shaders/Internal/fov.swsl b/Resources/Shaders/Internal/fov.swsl
+index 2790536..de469d4 100644
+--- a/Resources/Shaders/Internal/fov.swsl
++++ b/Resources/Shaders/Internal/fov.swsl
+@@ -4,12 +4,15 @@ preset raw;
+ 
+ #include "/Shaders/Internal/fov_shared.swsl"
+ 
+-const highp float g_MinVariance = 0.0;
+ uniform highp vec4 occludeColor;
+ 
+ void fragment()
+ {
+     highp float ourDist = length(worldSpaceDiff);
++    if (ourDist < 0.0001)
++    {
++        discard;
++    }
+ 
+     highp float occlDist = occludeDepth(worldSpaceDiff, TEXTURE, 0.75).r;
+ 
+diff --git a/Resources/Shaders/Internal/light-hard.swsl b/Resources/Shaders/Internal/light-hard.swsl
+index 7998888..d9b76b7 100644
+--- a/Resources/Shaders/Internal/light-hard.swsl
++++ b/Resources/Shaders/Internal/light-hard.swsl
+@@ -3,9 +3,10 @@
+ highp float createOcclusion(highp vec2 diff)
+ {
+     highp float ourDist = length(diff);
++    if (ourDist < 0.0001) return 1.0;
+ 
+     highp vec2 occlDist = occludeDepth(diff, shadowMap, lightIndex);
+ 
+-    return smoothstep(0.1, 1.0, ChebyshevUpperBound(occlDist, ourDist));
++    return clamp(smoothstep(0.1, 1.0, ChebyshevUpperBound(occlDist, ourDist)), 0.0, 1.0);
+ }
+ 
+diff --git a/Resources/Shaders/Internal/light-soft.swsl b/Resources/Shaders/Internal/light-soft.swsl
+index 79cfaee..1aa4080 100644
+--- a/Resources/Shaders/Internal/light-soft.swsl
++++ b/Resources/Shaders/Internal/light-soft.swsl
+@@ -8,11 +8,11 @@ highp vec4 calcGaussianWeights(highp float sigma, highp vec4 offset)
+ 
+ highp float createOcclusion(highp vec2 diff)
+ {
+-    // Calculate vector perpendicular to light vector.
+-    // So we can sample it to get a decent soft shadow?
+-    highp vec2 perpendicular = normalize(cross(vec3(diff, 0.0), vec3(0.0, 0.0, 1.0)).xy) * 1.0 / 32.0;
+-
+     highp float ourDist = length(diff);
++    if (ourDist < 0.0001) return 1.0;
++
++    // Calculate vector perpendicular to light vector.
++    highp vec2 perpendicular = vec2(-diff.y, diff.x) / ourDist * (1.0 / 32.0);
+ 
+     // Sample 7 points on a line perpendicular to the light source.
+     // Depending on the closest point, we change the gaussian weights down below
+@@ -40,19 +40,13 @@ highp float createOcclusion(highp vec2 diff)
+     mindist = max(0.001, mindist);
+ 
+     // Change soft shadow size based on distance from primary occluder.
+-    highp float distRatio = (ourDist - mindist);
++    highp float distRatio = max(0.0, ourDist - mindist);
+ 
+     // Sigma can never be zero so make sure to clamp.
+-    // TODO: Scaling the dist ratio here in a more sane way might make shadows look better buuuut I'm lazy.
+-    // Shadows look pretty nice already.
+     highp float sigma = max(0.001, distRatio * 0.75);
+     highp vec4 weights = calcGaussianWeights(sigma, vec4(0.0, 1.0, 2.0, 3.0));
+ 
+-    // Calculation of gaussian weights here is broken because it doesn't add up to 1.
+-    // Fixing this is hard and if I had to guess too expensive for GPU shaders.
+-    // So instead we add up the total weights and scale the result with that,
+-    // so that we still end up with 0-1.
+-    highp float totalWeigths = weights.x + weights.y * 2.0 + weights.z * 2.0 + weights.w * 2.0;
++    highp float totalWeigths = max(0.0001, weights.x + weights.y * 2.0 + weights.z * 2.0 + weights.w * 2.0);
+ 
+     highp float occlusion = 0.0;
+ 
+@@ -65,6 +59,6 @@ highp float createOcclusion(highp vec2 diff)
+     occlusion += ChebyshevUpperBound(sample6, ourDist) * weights.w;
+     occlusion += ChebyshevUpperBound(sample7, ourDist) * weights.w;
+ 
+-    return occlusion / totalWeigths;
++    return clamp(occlusion / totalWeigths, 0.0, 1.0);
+ }
+ 
+diff --git a/Resources/Shaders/Internal/light_shared.swsl b/Resources/Shaders/Internal/light_shared.swsl
+index e101e4a..cd132b6 100644
+--- a/Resources/Shaders/Internal/light_shared.swsl
++++ b/Resources/Shaders/Internal/light_shared.swsl
+@@ -44,10 +44,11 @@ void fragment()
+     // Totally not hacky PCF on top of VSM.
+     highp float occlusion = lightIndex < 0.0 ? 1.0 : createOcclusion(diff);
+ 
+-    if (occlusion == 0.0)
++    if (!(occlusion > 0.0))
+     {
+         discard;
+     }
++    occlusion = clamp(occlusion, 0.0, 1.0);
+ 
+     // this implementation of light attenuation primarily adapted from
+     // https://lisyarus.github.io/blog/posts/point-light-attenuation.html
+diff --git a/Resources/Shaders/Internal/shadow_cast_shared.swsl b/Resources/Shaders/Internal/shadow_cast_shared.swsl
+index 6ed529f..1918ef4 100644
+--- a/Resources/Shaders/Internal/shadow_cast_shared.swsl
++++ b/Resources/Shaders/Internal/shadow_cast_shared.swsl
+@@ -1,12 +1,13 @@
+ // Shared code necessary for using depth casting like FOV and shadows.
+ 
+ const highp float PI = 3.1415926535897932384626433; // That enough digits?
++const highp float g_MinVariance = 0.0;
+ 
+ // This returns a vec2 because of VSM moments.
+ highp vec2 occludeDepth(highp vec2 rel, sampler2D shadowMap, highp float mapOffsetY)
+ {
+-    // It's a circle now, because it's faster to compute.
+-    highp float deflect = (atan(rel.y, -rel.x) / PI);
++    // Protect against rel == vec2(0.0) where atan(0,0) is undefined and returns NaN on Mali GPUs.
++    highp float deflect = (dot(rel, rel) < 0.0000001) ? 0.0 : (atan(rel.y, -rel.x) / PI);
+     highp float mapOffsetX = (deflect + 1.0) / 2.0;
+     return zClydeShadowDepthUnpack(texture2D(shadowMap, vec2(mapOffsetX, mapOffsetY)));
+ }
+@@ -14,6 +15,7 @@ highp vec2 occludeDepth(highp vec2 rel, sampler2D shadowMap, highp float mapOffs
+ bool doesOcclude(highp vec2 diff, sampler2D shadowMap, highp float mapOffsetY, highp float bias)
+ {
+     highp float ourDist = length(diff);
++    if (ourDist < 0.0001) return false;
+ 
+     return occludeDepth(diff, shadowMap, mapOffsetY).x + bias < ourDist;
+ }
+@@ -22,12 +24,13 @@ bool doesOcclude(highp vec2 diff, sampler2D shadowMap, highp float mapOffsetY, h
+ highp float ChebyshevUpperBound(highp vec2 moments, highp float t)
+ {
+     // One-tailed inequality valid if t > Moments.x
+-    highp float p = float(t <= moments.x);
++    highp float p = (t <= moments.x) ? 1.0 : 0.0;
+     // Compute variance.
+     highp float variance = moments.y - (moments.x * moments.x);
+-    variance = max(variance, g_MinVariance);
++    variance = max(variance, max(g_MinVariance, 0.0001));
+     // Compute probabilistic upper bound.
+     highp float d = t - moments.x;
+-    highp float p_max = variance / (variance + d*d);
+-    return max(p, p_max);
++    highp float p_max = clamp(variance / max(variance + d*d, 0.00001), 0.0, 1.0);
++    return clamp(max(p, p_max), 0.0, 1.0);
+ }
++
+diff --git a/Robust.Client.Injectors/CompileRobustXamlTask.cs b/Robust.Client.Injectors/CompileRobustXamlTask.cs
+index 7225f46..a31d890 100644
+--- a/Robust.Client.Injectors/CompileRobustXamlTask.cs
++++ b/Robust.Client.Injectors/CompileRobustXamlTask.cs
+@@ -1,7 +1,10 @@
+-﻿using System;
++using System;
++using System.Collections.Generic;
+ using System.IO;
+ using System.Linq;
+ using Microsoft.Build.Framework;
++using Mono.Cecil;
++using Mono.Cecil.Cil;
+ using Robust.Xaml;
+ 
+ namespace Robust.Build.Tasks
+@@ -52,6 +55,8 @@ namespace Robust.Build.Tasks
+                     File.Copy(inputPdb, outputPdb, true);
+             }
+ 
++            InjectLegacyShims(OutputPath);
++
+             if (!string.IsNullOrEmpty(UpdateBuildIndicator))
+             {
+                 if (!File.Exists(UpdateBuildIndicator))
+@@ -101,5 +106,92 @@ namespace Robust.Build.Tasks
+ 
+         public IBuildEngine BuildEngine { get; set; } = null!;
+         public ITaskHost HostObject { get; set; } = null!;
++
++        private void InjectLegacyShims(string assemblyPath)
++        {
++            try
++            {
++                if (!File.Exists(assemblyPath))
++                    return;
++
++                var resolver = new DefaultAssemblyResolver();
++                var dir = Path.GetDirectoryName(assemblyPath);
++                if (!string.IsNullOrEmpty(dir))
++                    resolver.AddSearchDirectory(dir);
++
++                if (File.Exists(ReferencesFilePath))
++                {
++                    foreach (var r in File.ReadAllLines(ReferencesFilePath))
++                    {
++                        if (!string.IsNullOrWhiteSpace(r))
++                        {
++                            var refDir = Path.GetDirectoryName(r);
++                            if (!string.IsNullOrEmpty(refDir))
++                                resolver.AddSearchDirectory(refDir);
++                        }
++                    }
++                }
++
++                var readerParams = new ReaderParameters { ReadWrite = true, AssemblyResolver = resolver };
++                using var asm = AssemblyDefinition.ReadAssembly(assemblyPath, readerParams);
++
++                var modified = false;
++
++                // Shim Control.get_StyleClasses returning ICollection<string>
++                var controlType = asm.MainModule.GetType("Robust.Client.UserInterface.Control");
++                if (controlType != null)
++                {
++                    var modernGetter = controlType.Methods.FirstOrDefault(m => m.Name == "get_StyleClasses" && m.Parameters.Count == 0 && m.ReturnType.Name != "ICollection`1");
++                    if (modernGetter != null && !controlType.Methods.Any(m => m.Name == "get_StyleClasses" && m.ReturnType.Name == "ICollection`1"))
++                    {
++                        var iCollectionType = asm.MainModule.ImportReference(typeof(ICollection<string>));
++                        var legacyGetter = new MethodDefinition("get_StyleClasses",
++                            MethodAttributes.Public | MethodAttributes.HideBySig | MethodAttributes.SpecialName,
++                            iCollectionType);
++
++                        var il = legacyGetter.Body.GetILProcessor();
++                        il.Emit(OpCodes.Ldarg_0);
++                        il.Emit(OpCodes.Call, modernGetter);
++                        il.Emit(OpCodes.Ret);
++
++                        controlType.Methods.Add(legacyGetter);
++                        modified = true;
++                        BuildEngine.LogMessage("Injected legacy ICollection<string> get_StyleClasses shim into Control", MessageImportance.High);
++                    }
++                }
++
++                // Shim Button.get_StyleClasses returning ICollection<string>
++                var buttonType = asm.MainModule.GetType("Robust.Client.UserInterface.Controls.Button");
++                if (buttonType != null)
++                {
++                    var modernGetter = buttonType.Methods.FirstOrDefault(m => m.Name == "get_StyleClasses" && m.Parameters.Count == 0 && m.ReturnType.Name != "ICollection`1");
++                    if (modernGetter != null && !buttonType.Methods.Any(m => m.Name == "get_StyleClasses" && m.ReturnType.Name == "ICollection`1"))
++                    {
++                        var iCollectionType = asm.MainModule.ImportReference(typeof(ICollection<string>));
++                        var legacyGetter = new MethodDefinition("get_StyleClasses",
++                            MethodAttributes.Public | MethodAttributes.HideBySig | MethodAttributes.SpecialName,
++                            iCollectionType);
++
++                        var il = legacyGetter.Body.GetILProcessor();
++                        il.Emit(OpCodes.Ldarg_0);
++                        il.Emit(OpCodes.Call, modernGetter);
++                        il.Emit(OpCodes.Ret);
++
++                        buttonType.Methods.Add(legacyGetter);
++                        modified = true;
++                        BuildEngine.LogMessage("Injected legacy ICollection<string> get_StyleClasses shim into Button", MessageImportance.High);
++                    }
++                }
++
++                if (modified)
++                {
++                    asm.Write();
++                }
++            }
++            catch (Exception ex)
++            {
++                BuildEngine.LogMessage($"Warning: Failed to inject legacy shims into {assemblyPath}: {ex.Message}", MessageImportance.Normal);
++            }
++        }
+     }
+ }
+diff --git a/Robust.Client/CommandLineArgs.cs b/Robust.Client/CommandLineArgs.cs
+index 8c6640c..c7e37dd 100644
+--- a/Robust.Client/CommandLineArgs.cs
++++ b/Robust.Client/CommandLineArgs.cs
+@@ -37,34 +37,32 @@ internal sealed class CommandLineArgs
+         var mountOptions = new MountOptions();
+         var execCommands = new List<string>();
+ 
+-        using var enumerator = args.GetEnumerator();
+-
+-        while (enumerator.MoveNext())
++        for (var i = 0; i < args.Count; i++)
+         {
+-            var arg = enumerator.Current;
++            var arg = args[i];
+             if (arg == "--connect")
+             {
+                 connect = true;
+             }
+             else if (arg == "--connect-address")
+             {
+-                if (!enumerator.MoveNext())
++                if (++i >= args.Count)
+                 {
+                     C.WriteLine("Missing connection address.");
+                     return false;
+                 }
+ 
+-                connectAddress = enumerator.Current;
++                connectAddress = args[i];
+             }
+             else if (arg == "--ss14-address")
+             {
+-                if (!enumerator.MoveNext())
++                if (++i >= args.Count)
+                 {
+                     C.WriteLine("Missing SS14 address.");
+                     return false;
+                 }
+ 
+-                ss14Address = enumerator.Current;
++                ss14Address = args[i];
+             }
+             else if (arg == "--self-contained")
+             {
+@@ -80,23 +78,23 @@ internal sealed class CommandLineArgs
+             }
+             else if (arg == "--username")
+             {
+-                if (!enumerator.MoveNext())
++                if (++i >= args.Count)
+                 {
+                     C.WriteLine("Missing username.");
+                     return false;
+                 }
+ 
+-                username = enumerator.Current;
++                username = args[i];
+             }
+             else if (arg == "--cvar")
+             {
+-                if (!enumerator.MoveNext())
++                if (++i >= args.Count)
+                 {
+                     C.WriteLine("Missing cvar value.");
+                     return false;
+                 }
+ 
+-                var cvar = enumerator.Current;
++                var cvar = args[i];
+                 DebugTools.AssertNotNull(cvar);
+                 var pos = cvar.IndexOf('=');
+ 
+@@ -110,33 +108,33 @@ internal sealed class CommandLineArgs
+             }
+             else if (arg == "--mount-zip")
+             {
+-                if (!enumerator.MoveNext())
++                if (++i >= args.Count)
+                 {
+                     C.WriteLine("Missing mount path");
+                     return false;
+                 }
+ 
+-                mountOptions.ZipMounts.Add(enumerator.Current);
++                mountOptions.ZipMounts.Add(args[i]);
+             }
+             else if (arg == "--mount-dir")
+             {
+-                if (!enumerator.MoveNext())
++                if (++i >= args.Count)
+                 {
+                     C.WriteLine("Missing mount path");
+                     return false;
+                 }
+ 
+-                mountOptions.DirMounts.Add(enumerator.Current);
++                mountOptions.DirMounts.Add(args[i]);
+             }
+             else if (arg == "--loglevel")
+             {
+-                if (!enumerator.MoveNext())
++                if (++i >= args.Count)
+                 {
+                     C.WriteLine("Missing loglevel sawmill.");
+                     return false;
+                 }
+ 
+-                var loglevel = enumerator.Current;
++                var loglevel = args[i];
+                 DebugTools.AssertNotNull(loglevel);
+                 var pos = loglevel.IndexOf('=');
+ 
+@@ -155,7 +153,13 @@ internal sealed class CommandLineArgs
+             }
+             else if (arg.StartsWith("+"))
+             {
+-                execCommands.Add(arg[1..]);
++                var cmd = arg[1..];
++                while (i + 1 < args.Count && !args[i + 1].StartsWith("+") && !args[i + 1].StartsWith("--"))
++                {
++                    i++;
++                    cmd += " " + args[i];
++                }
++                execCommands.Add(cmd);
+             }
+             else
+             {
+diff --git a/Robust.Client/Console/ClientConGroupController.cs b/Robust.Client/Console/ClientConGroupController.cs
+index 6e8109c..3bc1482 100644
+--- a/Robust.Client/Console/ClientConGroupController.cs
++++ b/Robust.Client/Console/ClientConGroupController.cs
+@@ -1,4 +1,4 @@
+-﻿using System;
++using System;
+ 
+ namespace Robust.Client.Console
+ {
+@@ -23,6 +23,9 @@ namespace Robust.Client.Console
+ 
+         public bool CanCommand(string cmdName)
+         {
++            if (cmdName is "takescreenshot" or "showmobilewidget" or "openmobilecontrols")
++                return true;
++
+             return _implementation?.CanCommand(cmdName) ?? true;
+         }
+ 
+diff --git a/Robust.Client/ContentStart.cs b/Robust.Client/ContentStart.cs
+index 5e94723..6fa6021 100644
+--- a/Robust.Client/ContentStart.cs
++++ b/Robust.Client/ContentStart.cs
+@@ -4,11 +4,7 @@ namespace Robust.Client
+     {
+         public static void Start(string[] args)
+         {
+-#if FULL_RELEASE
+-            throw new System.InvalidOperationException("ContentStart.Start is not available on a full release.");
+-#else
+             GameController.Start(args, new GameControllerOptions(), true);
+-#endif
+         }
+ 
+         public static void StartLibrary(string[] args, GameControllerOptions options)
+diff --git a/Robust.Client/GameController/GameController.IoC.cs b/Robust.Client/GameController/GameController.IoC.cs
+index 6079fa6..3e2161b 100644
+--- a/Robust.Client/GameController/GameController.IoC.cs
++++ b/Robust.Client/GameController/GameController.IoC.cs
+@@ -1,4 +1,4 @@
+-﻿using System;
++using System;
+ using System.Collections.Generic;
+ using System.Reflection;
+ using Robust.Shared.ContentPack;
+@@ -19,14 +19,13 @@ namespace Robust.Client
+ 
+         internal static void RegisterReflection(IDependencyCollection deps)
+         {
+-            // Gets a handle to the shared and the current (client) dll.
+-            deps.Resolve<IReflectionManager>().LoadAssemblies(new List<Assembly>(2)
++            var assemblies = new List<Assembly>
+             {
+-                // Do NOT register Robust.Client.Godot.
+-                // At least not for now.
+                 AppDomain.CurrentDomain.GetAssemblyByName("Robust.Shared"),
+                 Assembly.GetExecutingAssembly()
+-            });
++            };
++
++            deps.Resolve<IReflectionManager>().LoadAssemblies(assemblies);
+         }
+     }
+ }
+diff --git a/Robust.Client/GameController/GameController.Standalone.cs b/Robust.Client/GameController/GameController.Standalone.cs
+index de20f0e..b918ded 100644
+--- a/Robust.Client/GameController/GameController.Standalone.cs
++++ b/Robust.Client/GameController/GameController.Standalone.cs
+@@ -166,7 +166,15 @@ namespace Robust.Client
+             if (!_dontStart)
+             {
+                 DebugTools.AssertNotNull(_mainLoop);
+-                _mainLoop!.Run();
++                AppDomain.CurrentDomain.SetData("SS14_ENGINE_READY", true);
++                try
++                {
++                    _mainLoop!.Run();
++                }
++                finally
++                {
++                    AppDomain.CurrentDomain.SetData("SS14_ENGINE_READY", false);
++                }
+             }
+ 
+             CleanupGameThread();
+diff --git a/Robust.Client/GameController/GameController.cs b/Robust.Client/GameController/GameController.cs
+index 1071ea0..2f43d39 100644
+--- a/Robust.Client/GameController/GameController.cs
++++ b/Robust.Client/GameController/GameController.cs
+@@ -266,7 +266,14 @@ namespace Robust.Client
+ 
+             if (_configurationManager.GetCVar(CVars.SysGCCollectStart))
+             {
+-                GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
++                try
++                {
++                    GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
++                }
++                catch (PlatformNotSupportedException)
++                {
++                    // LargeObjectHeapCompactionMode is not supported on Android/Mono.
++                }
+                 GC.Collect();
+             }
+ 
+@@ -358,9 +365,81 @@ namespace Robust.Client
+                 return false;
+             }
+ 
++            LogDebugInit($"[LoadModules] called. _modLoader type: {_modLoader.GetType().FullName}");
++
++            if (_modLoader is BaseModLoader baseModLoader)
++            {
++                LogDebugInit("[LoadModules] _modLoader is BaseModLoader");
++                if (!baseModLoader.LoadedModules.Any(m => m.GetName().Name == "Content.Shared"))
++                {
++                    try
++                    {
++                        var contentShared = System.Reflection.Assembly.Load("Content.Shared");
++                        LogDebugInit($"[LoadModules] Loaded fallback Content.Shared: {contentShared != null}");
++                        if (contentShared != null)
++                        {
++                            LogDebugInit("[LoadModules] Registering fallback Content.Shared from APK");
++                            baseModLoader.RegisterAlreadyLoadedAssembly(contentShared);
++                        }
++                    }
++                    catch (Exception ex)
++                    {
++                        LogDebugInit($"[LoadModules] Exception for Content.Shared: {ex}");
++                        _logger.Warning($"Could not load/register Content.Shared assembly: {ex}");
++                    }
++                }
++                else
++                {
++                    LogDebugInit("[LoadModules] Content.Shared already loaded from mount zip.");
++                }
++
++                if (!baseModLoader.LoadedModules.Any(m => m.GetName().Name == "Content.Client"))
++                {
++                    try
++                    {
++                        var contentClient = System.Reflection.Assembly.Load("Content.Client");
++                        LogDebugInit($"[LoadModules] Loaded fallback Content.Client: {contentClient != null}");
++                        if (contentClient != null)
++                        {
++                            LogDebugInit("[LoadModules] Registering fallback Content.Client from APK");
++                            baseModLoader.RegisterAlreadyLoadedAssembly(contentClient);
++                        }
++                    }
++                    catch (Exception ex)
++                    {
++                        LogDebugInit($"[LoadModules] Exception for Content.Client: {ex}");
++                        _logger.Warning($"Could not load/register Content.Client assembly: {ex}");
++                    }
++                }
++                else
++                {
++                    LogDebugInit("[LoadModules] Content.Client already loaded from mount zip.");
++                }
++            }
++            else
++            {
++                LogDebugInit("[LoadModules] _modLoader is NOT BaseModLoader!");
++            }
++
+             return true;
+         }
+ 
++        private void LogDebugInit(string message)
++        {
++            if (OperatingSystem.IsAndroid())
++            {
++                try
++                {
++                    System.IO.File.AppendAllText("/data/data/io.spacestation14.android/files/debug_init.txt", message + "\n");
++                }
++                catch {}
++            }
++            else
++            {
++                _logger.Debug(message);
++            }
++        }
++
+         internal bool StartupSystemSplash(
+             GameControllerOptions options,
+             Func<ILogHandler>? logHandlerFactory,
+diff --git a/Robust.Client/GameObjects/Components/Renderable/SpriteComponent.cs b/Robust.Client/GameObjects/Components/Renderable/SpriteComponent.cs
+index 5ddd6c6..d566a18 100644
+--- a/Robust.Client/GameObjects/Components/Renderable/SpriteComponent.cs
++++ b/Robust.Client/GameObjects/Components/Renderable/SpriteComponent.cs
+@@ -644,7 +644,7 @@ namespace Robust.Client.GameObjects
+ 
+         private object ParseKey(string keyString)
+         {
+-            if (reflection.TryParseEnumReference(keyString, out var @enum))
++            if (reflection.TryParseEnumReference(keyString, out var @enum, false))
+                 return @enum;
+ 
+             return keyString;
+diff --git a/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs b/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
+index cbc2da3..9d92b46 100644
+--- a/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
++++ b/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
+@@ -33,7 +33,7 @@ namespace Robust.Client.Graphics.Clyde
+ 
+         // Horizontal width, in pixels, of the shadow maps used to render FOV.
+         // I figured this was more accuracy sensitive than lights so resolution is significantly higher.
+-        private const int FovMapSize = 2048;
++        private static int FovMapSize => OperatingSystem.IsAndroid() ? 512 : 2048;
+ 
+         private ClydeShaderInstance _fovDebugShaderInstance = default!;
+ 
+diff --git a/Robust.Client/Graphics/Clyde/Clyde.Shaders.cs b/Robust.Client/Graphics/Clyde/Clyde.Shaders.cs
+index 8514701..17765dc 100644
+--- a/Robust.Client/Graphics/Clyde/Clyde.Shaders.cs
++++ b/Robust.Client/Graphics/Clyde/Clyde.Shaders.cs
+@@ -207,6 +207,7 @@ namespace Robust.Client.Graphics.Clyde
+                     versionHeader += "#define NO_ARRAY_PRECISION\n";
+                 }
+ 
++                versionHeader += "#ifdef FRAGMENT_SHADER\n#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n#endif\n";
+             }
+ 
+             if (_hasGLStandardDerivatives)
+@@ -249,9 +250,10 @@ namespace Robust.Client.Graphics.Clyde
+                 }
+                 catch (ShaderCompilationException e)
+                 {
+-                    File.WriteAllText("error.glsl", vertexSource);
++                    try { File.WriteAllText("error.glsl", vertexSource); } catch {}
++                    _clydeSawmill.Error($"Failed to compile vertex shader for '{name}': {e.Message}\nSource:\n{vertexSource}");
+                     throw new ShaderCompilationException(
+-                        "Failed to compile vertex shader, see inner for details (and error.glsl for formatted source).", e);
++                        $"Failed to compile vertex shader for '{name}': {e.Message}", e);
+                 }
+ 
+                 try
+@@ -260,9 +262,10 @@ namespace Robust.Client.Graphics.Clyde
+                 }
+                 catch (ShaderCompilationException e)
+                 {
+-                    File.WriteAllText("error.glsl", fragmentSource);
++                    try { File.WriteAllText("error.glsl", fragmentSource); } catch {}
++                    _clydeSawmill.Error($"Failed to compile fragment shader for '{name}': {e.Message}\nSource:\n{fragmentSource}");
+                     throw new ShaderCompilationException(
+-                        "Failed to compile fragment shader, see inner for details (and error.glsl for formatted source).", e);
++                        $"Failed to compile fragment shader for '{name}': {e.Message}", e);
+                 }
+ 
+                 var program = new GLShaderProgram(this, name);
+@@ -276,8 +279,8 @@ namespace Robust.Client.Graphics.Clyde
+                 catch (ShaderCompilationException e)
+                 {
+                     program.Delete();
+-
+-                    throw new ShaderCompilationException("Failed to link shaders. See inner for details.", e);
++                    _clydeSawmill.Error($"Failed to link shader program for '{name}': {e.Message}");
++                    throw new ShaderCompilationException($"Failed to link shader program for '{name}': {e.Message}", e);
+                 }
+ 
+                 return program;
+diff --git a/Robust.Client/Graphics/Clyde/GLContext/GLContextEgl.cs b/Robust.Client/Graphics/Clyde/GLContext/GLContextEgl.cs
+index 9f14125..16841d6 100644
+--- a/Robust.Client/Graphics/Clyde/GLContext/GLContextEgl.cs
++++ b/Robust.Client/Graphics/Clyde/GLContext/GLContextEgl.cs
+@@ -1,4 +1,4 @@
+-﻿using System;
++using System;
+ using System.Collections.Generic;
+ using System.Runtime.InteropServices;
+ using System.Text;
+diff --git a/Robust.Client/Graphics/Clyde/GLContext/GLContextWindow.cs b/Robust.Client/Graphics/Clyde/GLContext/GLContextWindow.cs
+index 2fe5442..145bef4 100644
+--- a/Robust.Client/Graphics/Clyde/GLContext/GLContextWindow.cs
++++ b/Robust.Client/Graphics/Clyde/GLContext/GLContextWindow.cs
+@@ -52,7 +52,7 @@ namespace Robust.Client.Graphics.Clyde
+             }
+ 
+             public override bool RequireWindowGL => true;
+-            // ANGLE does not support main window sRGB.
++            // ANGLE on Windows does not support main window sRGB.
+             public override bool HasBrokenWindowSrgb => Clyde._isGLES && OperatingSystem.IsWindows();
+ 
+             public GLContextWindow(Clyde clyde) : base(clyde)
+diff --git a/Robust.Client/Graphics/Clyde/Shaders/base-default.vert b/Robust.Client/Graphics/Clyde/Shaders/base-default.vert
+index 5195310..6893092 100644
+--- a/Robust.Client/Graphics/Clyde/Shaders/base-default.vert
++++ b/Robust.Client/Graphics/Clyde/Shaders/base-default.vert
+@@ -6,10 +6,10 @@
+ // Colour modulation.
+ /*layout (location = 3)*/ attribute vec4 modulate;
+ 
+-varying vec2 UV;
+-varying vec2 UV2;
+-varying vec2 Pos;
+-varying vec4 VtxModulate;
++varying highp vec2 UV;
++varying highp vec2 UV2;
++varying highp vec2 Pos;
++varying highp vec4 VtxModulate;
+ 
+ // Maybe we should merge these CPU side.
+ // idk yet.
+diff --git a/Robust.Client/Graphics/Clyde/Shaders/base-raw.vert b/Robust.Client/Graphics/Clyde/Shaders/base-raw.vert
+index 11fee7a..11c437e 100644
+--- a/Robust.Client/Graphics/Clyde/Shaders/base-raw.vert
++++ b/Robust.Client/Graphics/Clyde/Shaders/base-raw.vert
+@@ -6,8 +6,8 @@
+ // Colour modulation.
+ /*layout (location = 3)*/ attribute vec4 modulate;
+ 
+-varying vec2 UV;
+-varying vec2 UV2;
++varying highp vec2 UV;
++varying highp vec2 UV2;
+ 
+ // Maybe we should merge these CPU side.
+ // idk yet.
+diff --git a/Robust.Client/Graphics/Clyde/Shaders/shadow-depth.frag b/Robust.Client/Graphics/Clyde/Shaders/shadow-depth.frag
+index afb8f18..e4c4184 100644
+--- a/Robust.Client/Graphics/Clyde/Shaders/shadow-depth.frag
++++ b/Robust.Client/Graphics/Clyde/Shaders/shadow-depth.frag
+@@ -10,7 +10,9 @@ void main()
+     // p: Distance to closest point of line
+     // theta: Angle being queried
+     // phi: Angle of closest point of line - inherently on 90-degree angle to line angle
+-    highp float dist = abs(fragControl.z / cos(fragControl.x - fragControl.y));
++    highp float cosVal = cos(fragControl.x - fragControl.y);
++    if (abs(cosVal) < 1e-4) cosVal = sign(cosVal) * 1e-4;
++    highp float dist = clamp(abs(fragControl.z / cosVal), 0.0, 1000.0);
+ 
+     // Main body.
+ #ifdef HAS_DFDX
+diff --git a/Robust.Client/Graphics/Clyde/Shaders/shadow-depth.vert b/Robust.Client/Graphics/Clyde/Shaders/shadow-depth.vert
+index 76c0d73..9442690 100644
+--- a/Robust.Client/Graphics/Clyde/Shaders/shadow-depth.vert
++++ b/Robust.Client/Graphics/Clyde/Shaders/shadow-depth.vert
+@@ -12,7 +12,7 @@ attribute vec4 aPos;
+ attribute vec2 subVertex;
+ 
+ // x: actual angle, y: line angle + 90 degrees, z: Distance at y
+-varying vec3 fragControl;
++varying highp vec3 fragControl;
+ 
+ // Note: This is *not* the standard projectionMatrix!
+ uniform vec2 shadowLightCentre;
+@@ -34,6 +34,8 @@ void main()
+     // aPos is clockwise, but we need anticlockwise so swap it here
+     vec2 pA = aPos.zw - shadowLightCentre;
+     vec2 pB = aPos.xy - shadowLightCentre;
++    if (dot(pA, pA) < 1e-8) pA = vec2(1e-4, 0.0);
++    if (dot(pB, pB) < 1e-8) pB = vec2(1e-4, 0.0);
+     float xA = atan(pA.y, -pA.x);
+     float xB = atan(pB.y, -pB.x);
+ 
+@@ -72,7 +74,15 @@ void main()
+ 
+     // Calculate the necessary control data for the fragment shader.
+     vec2 lineNormal = pB - pA; // hypothetical: <- would have negative X, zero Y
+-    lineNormal /= length(lineNormal);
++    float lineLen = length(lineNormal);
++    if (lineLen < 1e-5)
++    {
++        lineNormal = vec2(1.0, 0.0);
++    }
++    else
++    {
++        lineNormal /= lineLen;
++    }
+     fragControl = vec3(
+         // Angle
+         targetAngle,
+diff --git a/Robust.Client/Graphics/Clyde/Shaders/winblit.vert b/Robust.Client/Graphics/Clyde/Shaders/winblit.vert
+index 75211d3..a0f5bee 100644
+--- a/Robust.Client/Graphics/Clyde/Shaders/winblit.vert
++++ b/Robust.Client/Graphics/Clyde/Shaders/winblit.vert
+@@ -10,7 +10,7 @@
+ // Texture coordinates.
+ /*layout (location = 1)*/ attribute vec2 tCoord;
+ 
+-varying vec2 UV;
++varying highp vec2 UV;
+ 
+ void main()
+ {
+diff --git a/Robust.Client/Graphics/Clyde/Windowing/Sdl3.Event.cs b/Robust.Client/Graphics/Clyde/Windowing/Sdl3.Event.cs
+index 80f9d62..a6e86a0 100644
+--- a/Robust.Client/Graphics/Clyde/Windowing/Sdl3.Event.cs
++++ b/Robust.Client/Graphics/Clyde/Windowing/Sdl3.Event.cs
+@@ -1,9 +1,10 @@
+-﻿using System;
++using System;
+ using System.Numerics;
+ using Robust.Client.Input;
+ using Robust.Shared.Map;
+ using SDL3;
+ using Key = Robust.Client.Input.Keyboard.Key;
++using Button = Robust.Client.Input.Mouse.Button;
+ using ET = SDL3.SDL.SDL_EventType;
+ using SDL_Keymod = SDL3.SDL.SDL_Keymod;
+ 
+@@ -15,8 +16,45 @@ internal partial class Clyde
+     {
+         public void ProcessEvents(bool single = false)
+         {
++            EventMouseMotion? pendingMotion = null;
++            Vector2 accumulatedDelta = Vector2.Zero;
++
++            void FlushPendingMotion()
++            {
++                if (pendingMotion != null)
++                {
++                    try
++                    {
++                        ProcessEventMouseMotion(pendingMotion, accumulatedDelta);
++                    }
++                    catch (Exception e)
++                    {
++                        _sawmill.Error($"Caught exception in windowing event (EventMouseMotion):\n{e}");
++                    }
++                    pendingMotion = null;
++                    accumulatedDelta = Vector2.Zero;
++                }
++            }
++
+             while (_eventReader.TryRead(out var ev))
+             {
++                if (ev is EventMouseMotion motion)
++                {
++                    if (pendingMotion != null && pendingMotion.WindowId != motion.WindowId)
++                    {
++                        FlushPendingMotion();
++                    }
++
++                    pendingMotion = motion;
++                    accumulatedDelta += new Vector2(motion.XRel, motion.YRel);
++                    if (!single)
++                        continue;
++                }
++                else
++                {
++                    FlushPendingMotion();
++                }
++
+                 try
+                 {
+                     ProcessEvent(ev);
+@@ -29,6 +67,8 @@ internal partial class Clyde
+                 if (single)
+                     break;
+             }
++
++            FlushPendingMotion();
+         }
+ 
+         // Block waiting on the windowing -> game thread channel.
+@@ -162,18 +202,19 @@ internal partial class Clyde
+                 return;
+ 
+             var button = ConvertSdl3Button(ev.Button);
++
+             var key = Mouse.MouseButtonToKey(button);
+             EmitKeyEvent(key, ev.Type, false, ev.Mods, 0, 0);
+         }
+ 
+-        private void ProcessEventMouseMotion(EventMouseMotion ev)
++        private void ProcessEventMouseMotion(EventMouseMotion ev, Vector2? customDelta = null)
+         {
+             var windowReg = FindWindow(ev.WindowId);
+             if (windowReg == null)
+                 return;
+ 
+             var newPos = new Vector2(ev.X, ev.Y) * windowReg.PixelRatio;
+-            var delta = new Vector2(ev.XRel, ev.YRel);
++            var delta = customDelta ?? new Vector2(ev.XRel, ev.YRel);
+             windowReg.LastMousePos = newPos;
+ 
+             _clyde._currentHoveredWindow = windowReg;
+diff --git a/Robust.Client/Graphics/Clyde/Windowing/Sdl3.Window.cs b/Robust.Client/Graphics/Clyde/Windowing/Sdl3.Window.cs
+index dd12203..947a6dc 100644
+--- a/Robust.Client/Graphics/Clyde/Windowing/Sdl3.Window.cs
++++ b/Robust.Client/Graphics/Clyde/Windowing/Sdl3.Window.cs
+@@ -176,7 +176,7 @@ internal partial class Clyde
+                 SDL.SDL_GL_SetAttribute(GLAttr.SDL_GL_STENCIL_SIZE, 8);
+                 SDL.SDL_GL_SetAttribute(
+                     GLAttr.SDL_GL_FRAMEBUFFER_SRGB_CAPABLE,
+-                    s.Profile == GLContextProfile.Es ? 0 : 1);
++                    OperatingSystem.IsWindows() && s.Profile == GLContextProfile.Es ? 0 : 1);
+                 int ctxFlags = 0;
+ #if DEBUG
+                 ctxFlags |= SDL.SDL_GL_CONTEXT_DEBUG_FLAG;
+diff --git a/Robust.Client/Input/InputManager.cs b/Robust.Client/Input/InputManager.cs
+index 9730488..db28900 100644
+--- a/Robust.Client/Input/InputManager.cs
++++ b/Robust.Client/Input/InputManager.cs
+@@ -9,6 +9,7 @@ using System.Runtime.InteropServices;
+ using System.Text;
+ using JetBrains.Annotations;
+ using Robust.Client.UserInterface;
++using Robust.Client.UserInterface.Mobile;
+ using Robust.Shared.Collections;
+ using Robust.Shared.Console;
+ using Robust.Shared.ContentPack;
+@@ -229,6 +230,34 @@ namespace Robust.Client.Input
+                 return;
+             }
+ 
++            if (OperatingSystem.IsAndroid() && MobileControlsOverlay.IsSecondaryActive && args.Key == Key.MouseLeft)
++            {
++                var isUI = _uiMgr.MouseGetControl(MouseScreenPosition) != null;
++                if (!isUI)
++                {
++                    args = new KeyEventArgs(Key.MouseRight, args.IsRepeat, args.Alt, args.Control, args.Shift, args.System, args.ScanCode, args.RawCode);
++                    MobileControlsOverlay.ResetSecondaryMode();
++                }
++            }
++
++            if (OperatingSystem.IsAndroid() && MobileControlsOverlay.IsExamActive && args.Key == Key.MouseLeft)
++            {
++                var isUI = _uiMgr.MouseGetControl(MouseScreenPosition) != null;
++                if (!isUI)
++                {
++                    MobileControlsOverlay.ResetExamMode();
++                }
++            }
++
++            if (OperatingSystem.IsAndroid() && MobileControlsOverlay.IsPullActive && args.Key == Key.MouseLeft)
++            {
++                var isUI = _uiMgr.MouseGetControl(MouseScreenPosition) != null;
++                if (!isUI)
++                {
++                    MobileControlsOverlay.ResetPullMode();
++                }
++            }
++
+             _keysPressed[(int)args.Key] = true;
+ 
+             PackedKeyCombo matchedCombo = default;
+@@ -261,9 +290,13 @@ namespace Robust.Client.Input
+                     }
+                     else if (PackedIsSubPattern(matchedCombo, binding.PackedKeyCombo))
+                     {
+-                        if (hasAllowSubCombs)
++                        // UI clicks (UIClick / UIRightClick) must NEVER be suppressed by gameplay world combos
++                        // (such as TryPullObject = Ctrl+Click, ExamineEntity = Shift+Click, AltActivate = Alt+Click).
++                        // Otherwise, holding or toggling a modifier key completely freezes UI interaction.
++                        if (hasAllowSubCombs || binding.Function == EngineKeyFunctions.UIClick || binding.Function == EngineKeyFunctions.UIRightClick)
+                         {
+                             bindsDown.Add(binding);
++                            hasCanFocus |= binding.CanFocus;
+                         }
+                         else
+                         {
+@@ -321,6 +354,11 @@ namespace Robust.Client.Input
+                 return;
+             }
+ 
++            if (OperatingSystem.IsAndroid() && args.Key == Key.MouseLeft && _keysPressed[(int)Key.MouseRight] && !_keysPressed[(int)Key.MouseLeft])
++            {
++                args = new KeyEventArgs(Key.MouseRight, args.IsRepeat, args.Alt, args.Control, args.Shift, args.System, args.ScanCode, args.RawCode);
++            }
++
+             FirstChanceOnKeyEvent?.Invoke(args, KeyEventType.Up);
+ 
+             var hasCanFocus = false;
+diff --git a/Robust.Client/Robust.Client.csproj b/Robust.Client/Robust.Client.csproj
+index c99c8a4..d6fb195 100644
+--- a/Robust.Client/Robust.Client.csproj
++++ b/Robust.Client/Robust.Client.csproj
+@@ -1,9 +1,9 @@
+-﻿<Project Sdk="Microsoft.NET.Sdk">
++<Project Sdk="Microsoft.NET.Sdk">
+   <Import Project="..\MSBuild\Robust.Engine.props" />
+   <PropertyGroup>
+     <IsPackable>false</IsPackable>
+     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+-    <OutputType>WinExe</OutputType>
++    <OutputType>Library</OutputType>
+     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+     <NoWarn>NU1701;CA1416</NoWarn>
+     <OutputPath>../bin/Client</OutputPath>
+diff --git a/Robust.Client/UserInterface/Control.Layout.cs b/Robust.Client/UserInterface/Control.Layout.cs
+index 2c7ef9c..d7f4f36 100644
+--- a/Robust.Client/UserInterface/Control.Layout.cs
++++ b/Robust.Client/UserInterface/Control.Layout.cs
+@@ -40,6 +40,7 @@ namespace Robust.Client.UserInterface
+         private Thickness _margin;
+         private bool _measuring;
+         private bool _arranging;
++        private bool _onlyPositionChanged;
+ 
+         /// <summary>
+         /// The desired minimum size this control needs for layout to avoid cutting off content or such.
+@@ -651,6 +652,7 @@ namespace Robust.Client.UserInterface
+ 
+                 if (!IsArrangeValid || PreviousArrange != finalRect)
+                 {
++                    _onlyPositionChanged = IsArrangeValid && PreviousArrange.HasValue && PreviousArrange.Value.Size == finalRect.Size;
+                     IsArrangeValid = true;
+                     ArrangeCore(finalRect);
+                     PreviousArrange = finalRect;
+@@ -659,6 +661,7 @@ namespace Robust.Client.UserInterface
+             finally
+             {
+                 _arranging = false;
++                _onlyPositionChanged = false;
+             }
+         }
+ 
+@@ -686,9 +689,11 @@ namespace Robust.Client.UserInterface
+ 
+             size = ApplySizeConstraints(this, size);
+ 
+-            var arranged = ArrangeOverride(size);
+-
+-            size = Vector2.Min(arranged, size);
++            if (!_onlyPositionChanged || size != Size)
++            {
++                var arranged = ArrangeOverride(size);
++                size = Vector2.Min(arranged, size);
++            }
+ 
+             switch (HorizontalAlignment)
+             {
+diff --git a/Robust.Client/UserInterface/Controls/LineEdit.cs b/Robust.Client/UserInterface/Controls/LineEdit.cs
+index 7aff690..5bafdfc 100644
+--- a/Robust.Client/UserInterface/Controls/LineEdit.cs
++++ b/Robust.Client/UserInterface/Controls/LineEdit.cs
+@@ -336,9 +336,12 @@ namespace Robust.Client.UserInterface.Controls
+             if (IgnoreNext)
+             {
+                 IgnoreNext = false;
++                AbortIme(delete: true);
+                 return;
+             }
+ 
++            AbortIme(delete: true);
++
+             InsertAtCursor(args.Text);
+             OnTextTyped?.Invoke(args);
+         }
+diff --git a/Robust.Client/UserInterface/Controls/TextEdit.cs b/Robust.Client/UserInterface/Controls/TextEdit.cs
+index ccba470..e887792 100644
+--- a/Robust.Client/UserInterface/Controls/TextEdit.cs
++++ b/Robust.Client/UserInterface/Controls/TextEdit.cs
+@@ -1,4 +1,4 @@
+-﻿using System;
++using System;
+ using System.Collections.Frozen;
+ using System.Collections.Generic;
+ using System.Diagnostics.Contracts;
+@@ -725,6 +725,8 @@ public sealed partial class TextEdit : Control
+         if (!Editable)
+             return;
+ 
++        AbortIme(delete: true);
++
+         InsertAtCursor(args.Text);
+         _blink.Reset();
+         EnsureCursorVisible();
+diff --git a/Robust.Client/UserInterface/UserInterfaceManager.cs b/Robust.Client/UserInterface/UserInterfaceManager.cs
+index 942e2f5..12c19e3 100644
+--- a/Robust.Client/UserInterface/UserInterfaceManager.cs
++++ b/Robust.Client/UserInterface/UserInterfaceManager.cs
+@@ -95,6 +95,8 @@ namespace Robust.Client.UserInterface
+ 
+         private bool _rendering = true;
+ 
++        private Mobile.MobileControlsOverlay? _mobileControlsOverlay;
++
+         private readonly Queue<Action> _deferQueue = new();
+         private readonly Queue<Control> _styleUpdateQueue = new();
+         private readonly Queue<Control> _measureUpdateQueue = new();
+@@ -189,6 +191,13 @@ namespace Robust.Client.UserInterface
+             RootControl.AddChild(WindowRoot);
+ 
+             RootControl.CreateRootControls();
++
++            if (OperatingSystem.IsAndroid() || _configurationManager.GetCVar(CVars.MobileTouchControls))
++            {
++                _mobileControlsOverlay = new Mobile.MobileControlsOverlay();
++                RootControl.AddChild(_mobileControlsOverlay);
++                LayoutContainer.SetAnchorPreset(_mobileControlsOverlay, LayoutContainer.LayoutPreset.Wide);
++            }
+         }
+ 
+         public void InitializeTesting()
+@@ -217,6 +226,15 @@ namespace Robust.Client.UserInterface
+                 // Update hovered. Can't rely upon mouse movement due to New controls potentially coming up.
+                 UpdateHovered();
+ 
++                // SDL3 reports attached keyboard/mouse devices, not key presses.
++                // The overlay only changes visibility when the combined state changes.
++                if (OperatingSystem.IsAndroid() && _mobileControlsOverlay != null)
++                {
++                    _mobileControlsOverlay.SetHardwareInputState(
++                        SDL3.SDL.SDL_HasKeyboard(),
++                        SDL3.SDL.SDL_HasMouse());
++                }
++
+                 foreach (var root in _roots)
+                 {
+                     CheckRootUIScaleUpdate(root);
+diff --git a/Robust.Client/UserInterface/XAML/Proxy/XamlHotReloadManager.cs b/Robust.Client/UserInterface/XAML/Proxy/XamlHotReloadManager.cs
+index d6a83e8..ed7b1ae 100644
+--- a/Robust.Client/UserInterface/XAML/Proxy/XamlHotReloadManager.cs
++++ b/Robust.Client/UserInterface/XAML/Proxy/XamlHotReloadManager.cs
+@@ -1,4 +1,4 @@
+-﻿#if TOOLS
++#if TOOLS
+ using System;
+ using System.Collections.Generic;
+ using System.IO;
+@@ -130,7 +130,7 @@ internal sealed partial class XamlHotReloadManager : IXamlHotReloadManager
+                 {
+                     files = Directory.GetFiles(systemPath);
+                 }
+-                catch (IOException) { }  // this is allowed to fail, and if so we just keep going up
++                catch (Exception) { }  // this is allowed to fail, and if so we just keep going up
+ 
+                 if (files.Any(f => Path.GetFileName(f).Equals(_markerFileName, StringComparison.InvariantCultureIgnoreCase)))
+                 {
+@@ -142,7 +142,7 @@ internal sealed partial class XamlHotReloadManager : IXamlHotReloadManager
+                 {
+                     newPath = Directory.GetParent(systemPath);
+                 }
+-                catch (IOException) { } // ditto here. if we don't find it, we're in the wrong place
++                catch (Exception) { } // ditto here. if we don't find it, we're in the wrong place
+ 
+                 if (newPath == null)
+                 {
+diff --git a/Robust.Shared/CVars.cs b/Robust.Shared/CVars.cs
+index fa1608e..6139170 100644
+--- a/Robust.Shared/CVars.cs
++++ b/Robust.Shared/CVars.cs
+@@ -887,38 +887,44 @@ namespace Robust.Shared
+         /// Maximum number of lights that the client will draw.
+         /// </summary>
+         public static readonly CVarDef<int> MaxLightCount =
+-            CVarDef.Create("light.max_light_count", 2048, CVar.CLIENTONLY | CVar.ARCHIVE);
++            CVarDef.Create("light.max_light_count", OperatingSystem.IsAndroid() ? 256 : 2048, CVar.CLIENTONLY | CVar.ARCHIVE);
+ 
+         /// <summary>
+         /// Maximum number of occluders that the client will draw. Values below 1024 have no effect.
+         /// </summary>
+         public static readonly CVarDef<int> MaxOccluderCount =
+-            CVarDef.Create("light.max_occluder_count", 2048, CVar.CLIENTONLY | CVar.ARCHIVE);
++            CVarDef.Create("light.max_occluder_count", OperatingSystem.IsAndroid() ? 512 : 2048, CVar.CLIENTONLY | CVar.ARCHIVE);
+ 
+         /// <summary>
+         /// Scale used to modify the horizontal and vertical resolution of lighting framebuffers,
+         /// relative to the viewport framebuffer size.
+         /// </summary>
+         public static readonly CVarDef<float> LightResolutionScale =
+-            CVarDef.Create("light.resolution_scale", 0.5f, CVar.CLIENTONLY | CVar.ARCHIVE);
++            CVarDef.Create("light.resolution_scale", OperatingSystem.IsAndroid() ? 0.35f : 0.5f, CVar.CLIENTONLY | CVar.ARCHIVE);
+ 
+         /// <summary>
+         /// Maximum amount of shadow-casting lights that can be rendered in a single viewport at once.
+         /// </summary>
+         public static readonly CVarDef<int> MaxShadowcastingLights =
+-            CVarDef.Create("light.max_shadowcasting_lights", 128, CVar.CLIENTONLY | CVar.ARCHIVE);
++            CVarDef.Create("light.max_shadowcasting_lights", OperatingSystem.IsAndroid() ? 16 : 128, CVar.CLIENTONLY | CVar.ARCHIVE);
++
++        /// <summary>
++        /// Bleed light onto walls to soften dark edges. Extremely expensive on mobile GPUs (TBDR).
++        /// </summary>
++        public static readonly CVarDef<bool> LightWallBleed =
++            CVarDef.Create("light.wall_bleed", !OperatingSystem.IsAndroid(), CVar.CLIENTONLY | CVar.ARCHIVE);
+ 
+         /// <summary>
+         /// Whether to give shadows a soft edge when rendering.
+         /// </summary>
+         public static readonly CVarDef<bool> LightSoftShadows =
+-            CVarDef.Create("light.soft_shadows", true, CVar.CLIENTONLY | CVar.ARCHIVE);
++            CVarDef.Create("light.soft_shadows", !OperatingSystem.IsAndroid(), CVar.CLIENTONLY | CVar.ARCHIVE);
+ 
+         /// <summary>
+         /// Apply a gaussian blur to the final lighting framebuffer to smoothen it out a little.
+         /// </summary>
+         public static readonly CVarDef<bool> LightBlur=
+-            CVarDef.Create("light.blur", true, CVar.CLIENTONLY | CVar.ARCHIVE);
++            CVarDef.Create("light.blur", !OperatingSystem.IsAndroid(), CVar.CLIENTONLY | CVar.ARCHIVE);
+ 
+         /// <summary>
+         /// Factor by which to blur the lighting framebuffer under <c>light.blur</c>.
+@@ -1225,6 +1231,30 @@ namespace Robust.Shared
+         public static readonly CVarDef<bool> DisplayWin32Experience =
+             CVarDef.Create("display.win32_experience", false, CVar.CLIENTONLY);
+ 
++        /// <summary>
++        /// Enable PojavLauncher-style on-screen touch controls for mobile.
++        /// </summary>
++        public static readonly CVarDef<bool> MobileTouchControls =
++            CVarDef.Create("mobile.touch_controls", true, CVar.CLIENTONLY | CVar.ARCHIVE);
++
++        /// <summary>
++        /// Opacity for on-screen touch controls.
++        /// </summary>
++        public static readonly CVarDef<float> MobileControlsOpacity =
++            CVarDef.Create("mobile.controls_opacity", 0.85f, CVar.CLIENTONLY | CVar.ARCHIVE);
++
++        /// <summary>
++        /// Scale multiplier for on-screen touch controls.
++        /// </summary>
++        public static readonly CVarDef<float> MobileControlsScale =
++            CVarDef.Create("mobile.controls_scale", 1.0f, CVar.CLIENTONLY | CVar.ARCHIVE);
++
++        /// <summary>
++        /// Persistent custom layout positions for on-screen touch controls.
++        /// </summary>
++        public static readonly CVarDef<string> MobileControlsLayout =
++            CVarDef.Create("mobile.controls_layout", "", CVar.CLIENTONLY | CVar.ARCHIVE);
++
+         /// <summary>
+         /// The window icon set to use. Overriden by <c>GameControllerOptions</c> on startup.
+         /// </summary>
+diff --git a/Robust.Shared/Configuration/ConfigurationManager.cs b/Robust.Shared/Configuration/ConfigurationManager.cs
+index 72844ae..649a4c4 100644
+--- a/Robust.Shared/Configuration/ConfigurationManager.cs
++++ b/Robust.Shared/Configuration/ConfigurationManager.cs
+@@ -531,11 +531,29 @@ namespace Robust.Shared.Configuration
+ 
+         public void LoadCVarsFromAssembly(Assembly assembly)
+         {
+-            foreach (var type in assembly
+-                         .GetTypes()
+-                         .Where(p => Attribute.IsDefined(p, typeof(CVarDefsAttribute))))
++            Type[] types;
++            try
++            {
++                types = assembly.GetTypes();
++            }
++            catch (ReflectionTypeLoadException ex)
+             {
+-                LoadCVarsFromType(type);
++                types = ex.Types.Where(t => t != null).ToArray()!;
++            }
++
++            foreach (var type in types)
++            {
++                try
++                {
++                    if (Attribute.IsDefined(type, typeof(CVarDefsAttribute)))
++                    {
++                        LoadCVarsFromType(type);
++                    }
++                }
++                catch
++                {
++                    // Ignore types with incompatible attributes from fork/custom assemblies
++                }
+             }
+         }
+ 
+diff --git a/Robust.Shared/ContentPack/BaseModLoader.cs b/Robust.Shared/ContentPack/BaseModLoader.cs
+index 93a6d1a..4163d2a 100644
+--- a/Robust.Shared/ContentPack/BaseModLoader.cs
++++ b/Robust.Shared/ContentPack/BaseModLoader.cs
+@@ -1,4 +1,4 @@
+-﻿using System;
++using System;
+ using System.Collections.Generic;
+ using System.Linq;
+ using System.Reflection;
+@@ -31,27 +31,92 @@ namespace Robust.Shared.ContentPack
+             return Mods.Select(p => p.GameAssembly).Single(p => p.GetName().Name == name);
+         }
+ 
++        public void RegisterAlreadyLoadedAssembly(Assembly assembly)
++        {
++            InitMod(assembly);
++        }
++
++        private void LogDebugInit(string message)
++        {
++            if (OperatingSystem.IsAndroid())
++            {
++                try
++                {
++                    System.IO.File.AppendAllText("/data/data/io.spacestation14.android/files/debug_init.txt", message + "\n");
++                }
++                catch {}
++            }
++            else
++            {
++                System.Console.WriteLine(message);
++            }
++        }
++
+         protected void InitMod(Assembly assembly)
+         {
++            var assemblyName = assembly.GetName().Name;
++            LogDebugInit($"[InitMod] Initializing assembly: {assemblyName}");
+             var mod = new ModInfo(assembly);
+ 
+-            ReflectionManager.LoadAssemblies(mod.GameAssembly);
++            if (!ReflectionManager.Assemblies.Any(a => a.GetName().Name == assemblyName))
++            {
++                ReflectionManager.LoadAssemblies(mod.GameAssembly);
++            }
++            else
++            {
++                LogDebugInit($"[InitMod] Assembly {assemblyName} is already registered in ReflectionManager by name. Skipping LoadAssemblies.");
++            }
+ 
+-            var entryPoints = mod.GameAssembly.GetTypes().Where(t => typeof(GameShared).IsAssignableFrom(t));
++            Type[] types;
++            try
++            {
++                types = mod.GameAssembly.GetTypes();
++                LogDebugInit($"[InitMod] Assembly {assemblyName} has {types.Length} types.");
++            }
++            catch (ReflectionTypeLoadException rtle)
++            {
++                LogDebugInit($"[InitMod] ReflectionTypeLoadException for {assemblyName}: {rtle}");
++                if (rtle.LoaderExceptions != null)
++                {
++                    foreach (var lex in rtle.LoaderExceptions)
++                    {
++                        LogDebugInit($"[InitMod] LoaderException: {lex}");
++                    }
++                }
++                types = rtle.Types.Where(t => t != null).ToArray()!;
++            }
+ 
+-            foreach (var entryPoint in entryPoints)
++            var entryPoints = new List<Type>();
++            foreach (var t in types)
+             {
+-                var entryPointInstance = (GameShared) Activator.CreateInstance(entryPoint)!;
+-                entryPointInstance.Dependencies = _dependencies;
+-                if (_testingCallbacks != null)
++                if (typeof(GameShared).IsAssignableFrom(t))
+                 {
+-                    entryPointInstance.SetTestingCallbacks(_testingCallbacks);
++                    entryPoints.Add(t);
++                    LogDebugInit($"[InitMod] Found EntryPoint: {t.FullName}");
+                 }
++            }
+ 
+-                mod.EntryPoints.Add(entryPointInstance);
++            foreach (var entryPoint in entryPoints)
++            {
++                try
++                {
++                    var entryPointInstance = (GameShared) Activator.CreateInstance(entryPoint)!;
++                    entryPointInstance.Dependencies = _dependencies;
++                    if (_testingCallbacks != null)
++                    {
++                        entryPointInstance.SetTestingCallbacks(_testingCallbacks);
++                    }
++
++                    mod.EntryPoints.Add(entryPointInstance);
++                }
++                catch (Exception ex)
++                {
++                    LogDebugInit($"[InitMod] Failed to instantiate EntryPoint {entryPoint}: {ex}");
++                }
+             }
+ 
+             Mods.Add(mod);
++            LogDebugInit($"[InitMod] Assembly {assemblyName} initialized successfully with {mod.EntryPoints.Count} entry points.");
+         }
+ 
+         public bool IsContentAssembly(Assembly typeAssembly)
+diff --git a/Robust.Shared/ContentPack/DirLoader.cs b/Robust.Shared/ContentPack/DirLoader.cs
+index 2524f06..416ccbd 100644
+--- a/Robust.Shared/ContentPack/DirLoader.cs
++++ b/Robust.Shared/ContentPack/DirLoader.cs
+@@ -1,4 +1,4 @@
+-﻿using System;
++using System;
+ using System.Collections.Generic;
+ using System.Diagnostics;
+ using System.Diagnostics.CodeAnalysis;
+@@ -41,12 +41,12 @@ namespace Robust.Shared.ContentPack
+                 // Nothing to check here since the ResourceManager handles checking permissions.
+             }
+ 
+-            /// <inheritdoc />
+             public bool TryGetFile(ResPath relPath, [NotNullWhen(true)] out Stream? stream)
+             {
+                 var path = GetPath(relPath);
+                 CheckPathCasing(relPath);
+ 
++                var exists = File.Exists(path);
+                 var ret = FileHelper.TryOpenFileRead(path, out var fStream);
+                 stream = fStream;
+                 return ret;
+@@ -63,7 +63,6 @@ namespace Robust.Shared.ContentPack
+                 return PathHelpers.SafeGetResourcePath(_directory.FullName, relPath);
+             }
+ 
+-            /// <inheritdoc />
+             public IEnumerable<ResPath> FindFiles(ResPath path)
+             {
+                 var fullPath = GetPath(path);
+@@ -72,7 +71,17 @@ namespace Robust.Shared.ContentPack
+                     yield break;
+                 }
+ 
+-                var paths = PathHelpers.GetFiles(fullPath);
++                IEnumerable<string> paths;
++                try
++                {
++                    paths = PathHelpers.GetFiles(fullPath);
++                }
++                catch (UnauthorizedAccessException ex)
++                {
++                    var debugLog = "/data/user/0/io.spacestation14.android/files/debug.txt";
++                    File.AppendAllText(debugLog, $"DirLoader.FindFiles CRASH: fullPath='{fullPath}', relSysPath='{path.ToRelativeSystemPath()}', Ex={ex}\n");
++                    throw new UnauthorizedAccessException($"FindFiles crashed on fullPath='{fullPath}'", ex);
++                }
+ 
+                 // GetFiles returns full paths, we want them relative to root
+                 foreach (var filePath in paths)
+diff --git a/Robust.Shared/ContentPack/PathHelpers.cs b/Robust.Shared/ContentPack/PathHelpers.cs
+index 64ffaee..0cabecb 100644
+--- a/Robust.Shared/ContentPack/PathHelpers.cs
++++ b/Robust.Shared/ContentPack/PathHelpers.cs
+@@ -1,4 +1,4 @@
+-﻿using System;
++using System;
+ using System.Collections.Generic;
+ using System.IO;
+ using Robust.Shared.Utility;
+@@ -15,14 +15,22 @@ namespace Robust.Shared.ContentPack
+         /// </summary>
+         internal static string GetExecutableDirectory()
+         {
++            if (!string.IsNullOrEmpty(ProgramShared.PathOffset))
++            {
++                return ProgramShared.PathOffset;
++            }
++
++            if (OperatingSystem.IsAndroid())
++            {
++                return "/data/data/io.spacestation14.android/files";
++            }
++
+             // Fallback in case the above doesn't work ig?
+             var assembly = typeof(PathHelpers).Assembly;
+             var location = assembly.Location;
+-            if (location == string.Empty)
++            if (string.IsNullOrEmpty(location))
+             {
+-                // See https://docs.microsoft.com/en-us/dotnet/api/system.reflection.assembly.location?view=net-5.0#remarks
+-                // This doesn't apply to us really because we don't do that kind of publishing, but whatever.
+-                throw new InvalidOperationException("Cannot find path of executable.");
++                return AppContext.BaseDirectory;
+             }
+             return Path.GetDirectoryName(location)!;
+         }
+diff --git a/Robust.Shared/GameObjects/Component.cs b/Robust.Shared/GameObjects/Component.cs
+index e2679c7..0466c19 100644
+--- a/Robust.Shared/GameObjects/Component.cs
++++ b/Robust.Shared/GameObjects/Component.cs
+@@ -27,6 +27,7 @@ namespace Robust.Shared.GameObjects
+     /// <seealso cref="ComponentState"/>
+     /// <seealso cref="UnsavedComponentAttribute"/>
+     [Reflect(false)]
++    [DataDefinition]
+     [ImplicitDataDefinitionForInheritors]
+     public abstract partial class Component : IComponent
+     {
+diff --git a/Robust.Shared/GameObjects/ComponentFactory.cs b/Robust.Shared/GameObjects/ComponentFactory.cs
+index 20bedc1..0c1c4d5 100644
+--- a/Robust.Shared/GameObjects/ComponentFactory.cs
++++ b/Robust.Shared/GameObjects/ComponentFactory.cs
+@@ -469,18 +469,28 @@ namespace Robust.Shared.GameObjects
+             var idxToType = _idxToType.ToDictionary();
+             var ignored = _ignored.ToHashSet();
+ 
+-            var added = new ComponentRegistration[types.Length];
++            var addedList = new List<ComponentRegistration>(types.Length);
+             var typeToidx = _typeToIdx.ToDictionary();
+ 
+             for (int i = 0; i < types.Length; i++)
+             {
+                 var type = types[i];
+-                var idx = CompIdx.GetIndex(type);
+-                typeToidx[type] = idx;
++                try
++                {
++                    var idx = CompIdx.GetIndex(type);
++                    typeToidx[type] = idx;
+ 
+-                added[i] = Register(type, idx, names, lowerCaseNames, typesDict, idxToType, ignored, overwrite);
++                    var reg = Register(type, idx, names, lowerCaseNames, typesDict, idxToType, ignored, overwrite);
++                    addedList.Add(reg);
++                }
++                catch (Exception e)
++                {
++                    _sawmill.Error($"Failed to register component type {type.FullName ?? type.Name}: {e.Message}");
++                }
+             }
+ 
++            var added = addedList.ToArray();
++
+             var st = RStopwatch.StartNew();
+             _typeToIdx = typeToidx.ToFrozenDictionary();
+             _names = names.ToFrozenDictionary();
+diff --git a/Robust.Shared/GameObjects/EntityEventBus.Common.cs b/Robust.Shared/GameObjects/EntityEventBus.Common.cs
+index b076d26..1d1026f 100644
+--- a/Robust.Shared/GameObjects/EntityEventBus.Common.cs
++++ b/Robust.Shared/GameObjects/EntityEventBus.Common.cs
+@@ -1,4 +1,4 @@
+-﻿using System;
++using System;
+ using System.Collections.Frozen;
+ using System.Collections.Generic;
+ using System.Runtime.CompilerServices;
+@@ -62,13 +62,13 @@ internal sealed partial class EntityEventBus : IEventBus
+     private readonly List<Type> _childrenTypesTemp = [];
+ 
+     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+-    private static ref Unit ExtractUnitRef(ref object obj, Type objType)
++    internal static ref Unit ExtractUnitRef(ref object obj, Type objType)
+     {
+         // If it's a boxed value type we have to do some trickery to return the INTERIOR reference,
+         // not the reference to the boxed object.
+         // Otherwise the unit points to the reference to the reference type.
+         return ref objType.IsValueType
+-            ? ref Unsafe.As<object, UnitBox>(ref obj).Value
++            ? ref Unsafe.Unbox<Unit>(obj)
+             : ref Unsafe.As<object, Unit>(ref obj);
+     }
+ 
+diff --git a/Robust.Shared/GameObjects/EntityEventBus.Directed.cs b/Robust.Shared/GameObjects/EntityEventBus.Directed.cs
+index f921e6c..34ec914 100644
+--- a/Robust.Shared/GameObjects/EntityEventBus.Directed.cs
++++ b/Robust.Shared/GameObjects/EntityEventBus.Directed.cs
+@@ -199,7 +199,7 @@ namespace Robust.Shared.GameObjects
+         public void RaiseLocalEvent(EntityUid uid, object args, bool broadcast = false)
+         {
+             var type = args.GetType();
+-            ref var unitRef = ref Unsafe.As<object, Unit>(ref args);
++            ref var unitRef = ref ExtractUnitRef(ref args, type);
+ 
+             RaiseLocalEventCore(uid, ref unitRef, type, broadcast);
+         }
+@@ -216,7 +216,7 @@ namespace Robust.Shared.GameObjects
+         public void RaiseLocalEvent(EntityUid uid, ref object args, bool broadcast = false)
+         {
+             var type = args.GetType();
+-            ref var unitRef = ref Unsafe.As<object, Unit>(ref args);
++            ref var unitRef = ref ExtractUnitRef(ref args, type);
+ 
+             RaiseLocalEventCore(uid, ref unitRef, type, broadcast);
+         }
+diff --git a/Robust.Shared/GameObjects/EntityEvents.cs b/Robust.Shared/GameObjects/EntityEvents.cs
+index 6e246f5..0e98799 100644
+--- a/Robust.Shared/GameObjects/EntityEvents.cs
++++ b/Robust.Shared/GameObjects/EntityEvents.cs
+@@ -51,7 +51,7 @@ namespace Robust.Shared.GameObjects
+         public ICommonSession SenderSession { get; }
+     }
+ 
+-    internal readonly struct EntitySessionMessage<T>
++    internal sealed class EntitySessionMessage<T>
+     {
+         public EntitySessionMessage(EntitySessionEventArgs eventArgs, T message)
+         {
+diff --git a/Robust.Shared/IoC/DependencyCollection.cs b/Robust.Shared/IoC/DependencyCollection.cs
+index 57ae606..8d643ce 100644
+--- a/Robust.Shared/IoC/DependencyCollection.cs
++++ b/Robust.Shared/IoC/DependencyCollection.cs
+@@ -612,6 +612,38 @@ namespace Robust.Shared.IoC
+                 return default;
+             }
+ 
++            if (OperatingSystem.IsAndroid() || OperatingSystem.IsIOS())
++            {
++                var servicesList = new List<object>();
++                foreach (var field in fields)
++                {
++                    if (!TryResolveType(field.FieldType, out var service))
++                    {
++                        if (field.FieldType == typeof(IDependencyCollection))
++                        {
++                            service = this;
++                        }
++                        else
++                        {
++                            throw new UnregisteredDependencyException(type, field.FieldType, field.Name);
++                        }
++                    }
++                    servicesList.Add(service);
++                }
++                
++                var @delegateObj = (InjectorDelegate)((target, svcs) =>
++                {
++                    for (int j = 0; j < fields.Count; j++)
++                    {
++                        fields[j].SetValue(target, svcs[j]);
++                    }
++                });
++
++                cached = new CachedInjector(@delegateObj, false, servicesList.ToArray());
++                _injectorCache.Add(type, cached);
++                return cached;
++            }
++
+             var dynamicMethod = new DynamicMethod($"_injector<>{type}", null, InjectorParameters, type, true);
+ 
+             dynamicMethod.DefineParameter(1, ParameterAttributes.In, "target");
+diff --git a/Robust.Shared/Localization/LocalizationManager.cs b/Robust.Shared/Localization/LocalizationManager.cs
+index b7d3ea8..5e3941e 100644
+--- a/Robust.Shared/Localization/LocalizationManager.cs
++++ b/Robust.Shared/Localization/LocalizationManager.cs
+@@ -414,14 +414,33 @@ namespace Robust.Shared.Localization
+             foreach (var culture in cultures)
+             {
+                 if (!_contexts.TryGetValue(culture, out var bundle))
+-                    throw new ArgumentException("That culture is not loaded.", nameof(culture));
++                {
++                    try
++                    {
++                        LoadCulture(culture);
++                        _contexts.TryGetValue(culture, out bundle);
++                    }
++                    catch
++                    {
++                        // Ignore if culture cannot be loaded
++                    }
++                }
++
++                if (bundle == null)
++                    continue;
+ 
+                 tuples[i++] = (culture, bundle);
+             }
+ 
++            if (i < tuples.Length)
++                Array.Resize(ref tuples, i);
++
+             _fallbackCultures = tuples;
+         }
+ 
++        [Obsolete("Use SetFallbackCulture instead")]
++        public void SetFallbackCluture(CultureInfo culture) => SetFallbackCluture(new[] { culture });
++
+         public void AddLoadedToStringSerializer(IRobustMappedStringSerializer serializer)
+         {
+             /*
+diff --git a/Robust.Shared/Map/TileDefinitionManager.cs b/Robust.Shared/Map/TileDefinitionManager.cs
+index 3b14440..b262ca0 100644
+--- a/Robust.Shared/Map/TileDefinitionManager.cs
++++ b/Robust.Shared/Map/TileDefinitionManager.cs
+@@ -1,4 +1,4 @@
+-﻿using System;
++using System;
+ using System.Collections.Generic;
+ using System.Diagnostics.CodeAnalysis;
+ using Robust.Shared.Random;
+@@ -65,7 +65,19 @@ namespace Robust.Shared.Map
+ 
+         public ITileDefinition this[string name] => _tileNames[name];
+ 
+-        public ITileDefinition this[int id] => TileDefs[id];
++        public ITileDefinition this[int id]
++        {
++            get
++            {
++                if ((uint) id < (uint) TileDefs.Count)
++                    return TileDefs[id];
++
++                if (TileDefs.Count > 0)
++                    return TileDefs[0];
++
++                throw new IndexOutOfRangeException($"TileDefs is empty! Requested {id}");
++            }
++        }
+ 
+         public bool TryGetDefinition(string name, [NotNullWhen(true)] out ITileDefinition? definition)
+         {
+@@ -74,7 +86,7 @@ namespace Robust.Shared.Map
+ 
+         public bool TryGetDefinition(int id, [NotNullWhen(true)] out ITileDefinition? definition)
+         {
+-            if (id >= TileDefs.Count)
++            if ((uint) id >= (uint) TileDefs.Count)
+             {
+                 definition = null;
+                 return false;
+diff --git a/Robust.Shared/Native/Libc.cs b/Robust.Shared/Native/Libc.cs
+index 06be04d..e29fe66 100644
+--- a/Robust.Shared/Native/Libc.cs
++++ b/Robust.Shared/Native/Libc.cs
+@@ -1,4 +1,4 @@
+-﻿using System;
++using System;
+ using System.Runtime.InteropServices;
+ 
+ namespace Robust.Shared.Native;
+@@ -14,6 +14,6 @@ internal static class Libc
+     public const int RTLD_LOCAL = 0;
+     public const int RTLD_NODELETE = 0x01000;
+ 
+-    [DllImport("libdl.so.2")]
++    [DllImport("libdl")]
+     public static extern IntPtr dlopen([MarshalAs(UnmanagedType.LPUTF8Str)] string name, int flags);
+ }
+diff --git a/Robust.Shared/Network/AuthManager.cs b/Robust.Shared/Network/AuthManager.cs
+index ea2250e..a86a98e 100644
+--- a/Robust.Shared/Network/AuthManager.cs
++++ b/Robust.Shared/Network/AuthManager.cs
+@@ -1,4 +1,4 @@
+-﻿using System;
++using System;
+ using System.Diagnostics.CodeAnalysis;
+ 
+ namespace Robust.Shared.Network
+@@ -8,7 +8,7 @@ namespace Robust.Shared.Network
+     /// <summary>
+     ///     Stores client authentication parameters.
+     /// </summary>
+-    internal interface IAuthManager
++    public interface IAuthManager
+     {
+         NetUserId? UserId { get; set; }
+         string? Server { get; set; }
+diff --git a/Robust.Shared/Network/NetManager.ClientConnect.cs b/Robust.Shared/Network/NetManager.ClientConnect.cs
+index 4f671d6..910ea01 100644
+--- a/Robust.Shared/Network/NetManager.ClientConnect.cs
++++ b/Robust.Shared/Network/NetManager.ClientConnect.cs
+@@ -105,6 +105,7 @@ namespace Robust.Shared.Network
+             }
+             catch (Exception e)
+             {
++                try { System.IO.File.AppendAllText("/data/data/io.spacestation14.android/files/connect_log.txt", $"{DateTime.UtcNow:O} CCDoHandshake Exception: {e}\n"); } catch { }
+                 OnConnectFailed(e.Message);
+                 _logger.Error("Exception during handshake: {0}", e);
+                 winningPeer.Peer.Shutdown("Something happened.");
+@@ -139,7 +140,7 @@ namespace Robust.Shared.Network
+             {
+                 UserName = userNameRequest,
+                 CanAuth = authenticate,
+-                NeedPubKey = !hasPubKey,
++                NeedPubKey = true,
+                 Encrypt = encrypt
+             };
+ 
+@@ -164,7 +165,11 @@ namespace Robust.Shared.Network
+                     encryption = new NetEncryption(sharedSecret, isServer: false);
+ 
+                 byte[] keyBytes;
+-                if (hasPubKey)
++                if (encRequest.PublicKey is { Length: CryptoBox.PublicKeyBytes })
++                {
++                    keyBytes = encRequest.PublicKey;
++                }
++                else if (hasPubKey)
+                 {
+                     // public key provided by launcher.
+                     keyBytes = Convert.FromBase64String(pubKey!);
+@@ -200,7 +205,8 @@ namespace Robust.Shared.Network
+                 }
+ 
+                 var joinReq = new JoinRequest(authHash, Base64Helpers.ToBase64Nullable(modernHwid));
+-                var request = new HttpRequestMessage(HttpMethod.Post, authServer + "api/session/join");
++                var baseAuthUrl = (authServer ?? AuthManager.DefaultAuthServer).TrimEnd('/');
++                var request = new HttpRequestMessage(HttpMethod.Post, baseAuthUrl + "/api/session/join");
+                 request.Content = JsonContent.Create(joinReq);
+                 request.Headers.Authorization = new AuthenticationHeaderValue("SS14Auth", authToken);
+                 var joinResp = await _http.Client.SendAsync(request, cancel);
+diff --git a/Robust.Shared/Network/NetManager.cs b/Robust.Shared/Network/NetManager.cs
+index 371f973..4b29dec 100644
+--- a/Robust.Shared/Network/NetManager.cs
++++ b/Robust.Shared/Network/NetManager.cs
+@@ -1013,15 +1013,17 @@ namespace Robust.Shared.Network
+             }
+             catch (InvalidCastException ice)
+             {
+-                if (_logPacketIssues)
+-                    _logger.Error($"{msg.SenderConnection.RemoteEndPoint}: Wrong deserialization of {type.Name} packet:\n{ice}");
++                var err = $"{msg.SenderConnection.RemoteEndPoint}: Wrong deserialization of {type.Name} packet:\n{ice}";
++                _logger.Error(err);
++                try { System.IO.File.AppendAllText("/data/data/io.spacestation14.android/files/connect_log.txt", $"{DateTime.UtcNow:O} {err}\n"); } catch {}
+                 channel.Disconnect("Failed to deserialize packet.", false);
+                 return true;
+             }
+             catch (Exception e) // yes, we want to catch ALL exeptions for security
+             {
+-                if (_logPacketIssues)
+-                    _logger.Error($"{msg.SenderConnection.RemoteEndPoint}: Failed to deserialize {type.Name} packet:\n{e}");
++                var err = $"{msg.SenderConnection.RemoteEndPoint}: Failed to deserialize {type.Name} packet:\n{e}";
++                _logger.Error(err);
++                try { System.IO.File.AppendAllText("/data/data/io.spacestation14.android/files/connect_log.txt", $"{DateTime.UtcNow:O} {err}\n"); } catch {}
+                 channel.Disconnect("Failed to deserialize packet.", false);
+                 return true;
+             }
+diff --git a/Robust.Shared/ProgramShared.cs b/Robust.Shared/ProgramShared.cs
+index a75bfa0..2c8479a 100644
+--- a/Robust.Shared/ProgramShared.cs
++++ b/Robust.Shared/ProgramShared.cs
+@@ -29,27 +29,33 @@ internal static class ProgramShared
+     }
+ 
+ #if !FULL_RELEASE
+-    private static string FindContentRootDir(StartType startType)
++    private static string FindEngineRootDir(StartType startType)
+     {
++        if (OperatingSystem.IsAndroid())
++            return PathOffset;
++
+         var relative = startType switch
+         {
+-            StartType.Engine => "../../../",
+-            StartType.Content => "../../",
++            StartType.Engine => "../../",
++            StartType.Content => "../../RobustToolbox/",
+             StartType.Loader => throw new InvalidOperationException(),
+-            StartType.ContentAppBundle => "../../../../../",
++            StartType.ContentAppBundle => "../../../../../RobustToolbox/",
+             _ => throw new ArgumentOutOfRangeException(nameof(startType), startType, null)
+         };
+         return PathOffset + relative;
+     }
+ 
+-    private static string FindEngineRootDir(StartType startType)
++    private static string FindContentRootDir(StartType startType)
+     {
++        if (OperatingSystem.IsAndroid())
++            return PathOffset;
++
+         var relative = startType switch
+         {
+-            StartType.Engine => "../../",
+-            StartType.Content => "../../RobustToolbox/",
++            StartType.Engine => "../../bin/Content.Server/",
++            StartType.Content => "../../",
+             StartType.Loader => throw new InvalidOperationException(),
+-            StartType.ContentAppBundle => "../../../../../RobustToolbox/",
++            StartType.ContentAppBundle => "../../../../../",
+             _ => throw new ArgumentOutOfRangeException(nameof(startType), startType, null)
+         };
+         return PathOffset + relative;
+@@ -78,7 +84,15 @@ internal static class ProgramShared
+ #else
+         var engineRoot = FindEngineRootDir(startType);
+         // System.Console.WriteLine($"ENGINE DIR IS {engineRoot}");
+-        res.MountContentDirectory($@"{engineRoot}Resources/");
++        var engineZip = Path.Combine(engineRoot, "resources.zip");
++        if (File.Exists(engineZip))
++        {
++            res.MountContentPack(engineZip);
++        }
++        else
++        {
++            res.MountContentDirectory($@"{engineRoot}Resources/");
++        }
+ 
+         if (loadContentResources)
+         {
+@@ -88,12 +102,25 @@ internal static class ProgramShared
+             {
+                 res.MountContentDirectory("./", assembliesPath);
+             }
++            else if (OperatingSystem.IsAndroid())
++            {
++                res.MountContentDirectory(PathOffset, assembliesPath);
++            }
+             else
+             {
+                 res.MountContentDirectory($@"{contentRootDir}bin/{contentBuildDir}/", assembliesPath);
+             }
+ 
+-            res.MountContentDirectory($@"{contentRootDir}Resources/");
++            var contentZip = Path.Combine(contentRootDir, "resources.zip");
++            if (File.Exists(contentZip))
++            {
++                if (contentZip != engineZip)
++                    res.MountContentPack(contentZip);
++            }
++            else
++            {
++                res.MountContentDirectory($@"{contentRootDir}Resources/");
++            }
+         }
+ #endif
+ 
+diff --git a/Robust.Shared/Prototypes/PrototypeManager.cs b/Robust.Shared/Prototypes/PrototypeManager.cs
+index 527ae7e..c17b0ac 100644
+--- a/Robust.Shared/Prototypes/PrototypeManager.cs
++++ b/Robust.Shared/Prototypes/PrototypeManager.cs
+@@ -637,34 +637,58 @@ namespace Robust.Shared.Prototypes
+ 
+             foreach (var root in tree.RootNodes)
+             {
+-                ThreadPool.QueueUserWorkItem(_ => { ProcessItem(root, results[root]); });
++                if (results.TryGetValue(root, out var rootDatum))
++                {
++                    ThreadPool.QueueUserWorkItem(_ => { ProcessItem(root, rootDatum); });
++                }
++                else
++                {
++                    ThreadPool.QueueUserWorkItem(_ => { ProcessItem(root, null); });
++                }
+             }
+ 
+-            void ProcessItem(string id, InheritancePushDatum datum)
++            void ProcessItem(string id, InheritancePushDatum? datum)
+             {
+                 try
+                 {
+-                    if (tree.TryGetParents(id, out var parents))
++                    if (datum != null && tree.TryGetParents(id, out var parents))
+                     {
+                         if (parents.Length == 1)
+                         {
+-                            datum.Result = _serializationManager.PushCompositionWithGenericNode(
+-                                kind,
+-                                results[parents[0]].Result,
+-                                datum.Result);
++                            if (results.TryGetValue(parents[0], out var parentDatum))
++                            {
++                                datum.Result = _serializationManager.PushCompositionWithGenericNode(
++                                    kind,
++                                    parentDatum.Result,
++                                    datum.Result);
++                            }
++                            else
++                            {
++                                Sawmill.Error($"Parent prototype '{parents[0]}' for child '{id}' was not found in raw results!");
++                            }
+                         }
+                         else
+                         {
+-                            var parentNodes = new MappingDataNode[parents.Length];
++                            var parentNodes = new List<MappingDataNode>();
+                             for (var i = 0; i < parents.Length; i++)
+                             {
+-                                parentNodes[i] = results[parents[i]].Result;
++                                if (results.TryGetValue(parents[i], out var parentDatum))
++                                {
++                                    parentNodes.Add(parentDatum.Result);
++                                }
++                                else
++                                {
++                                    Sawmill.Error($"Parent prototype '{parents[i]}' for child '{id}' was not found in raw results!");
++                                }
+                             }
+ 
+-                            datum.Result = _serializationManager.PushCompositionWithGenericNode(
+-                                kind,
+-                                parentNodes,
+-                                datum.Result);
++                            if (parentNodes.Count > 0)
++                            {
++                                datum.Result = _serializationManager.PushCompositionWithGenericNode(
++                                    kind,
++                                    parentNodes.ToArray(),
++                                    datum.Result);
++                            }
+                         }
+                     }
+ 
+@@ -672,21 +696,35 @@ namespace Robust.Shared.Prototypes
+                     {
+                         foreach (var child in children)
+                         {
+-                            var childDatum = results[child];
+-                            var val = Interlocked.Decrement(ref childDatum.CountParentsRemaining);
+-                            if (val == 0)
++                            if (results.TryGetValue(child, out var childDatum))
++                            {
++                                var val = Interlocked.Decrement(ref childDatum.CountParentsRemaining);
++                                if (val == 0)
++                                {
++                                    ThreadPool.QueueUserWorkItem(_ => { ProcessItem(child, childDatum); });
++                                }
++                            }
++                            else
+                             {
+-                                ThreadPool.QueueUserWorkItem(_ => { ProcessItem(child, childDatum); });
++                                ThreadPool.QueueUserWorkItem(_ => { ProcessItem(child, null); });
+                             }
+                         }
+                     }
+ 
+-                    // ReSharper disable once AccessToDisposedClosure
+-                    countDown.Signal();
++                    if (datum != null)
++                    {
++                        // ReSharper disable once AccessToDisposedClosure
++                        countDown.Signal();
++                    }
+                 }
+                 catch (Exception e)
+                 {
+                     Sawmill.Error($"Failed to push composition for {kind.Name} prototype with id: {id}. Exception: {e}");
++                    if (datum != null)
++                    {
++                        // ReSharper disable once AccessToDisposedClosure
++                        countDown.Signal();
++                    }
+                     throw;
+                 }
+             }
+@@ -733,7 +771,7 @@ namespace Robust.Shared.Prototypes
+         {
+             if (!_kinds.TryGetValue(typeof(T), out var index))
+             {
+-                throw new UnknownPrototypeException(id, typeof(T));
++                return false;
+             }
+ 
+             return index.Instances.ContainsKey(id);
+@@ -782,7 +820,8 @@ namespace Robust.Shared.Prototypes
+         {
+             if (!_kinds.TryGetValue(kind, out var index))
+             {
+-                throw new UnknownPrototypeException(id, kind);
++                prototype = null;
++                return false;
+             }
+ 
+             return index.Instances.TryGetValue(id, out prototype);
+diff --git a/Robust.Shared/Serialization/RobustMappedStringSerializer.cs b/Robust.Shared/Serialization/RobustMappedStringSerializer.cs
+index ead07fe..841047f 100644
+--- a/Robust.Shared/Serialization/RobustMappedStringSerializer.cs
++++ b/Robust.Shared/Serialization/RobustMappedStringSerializer.cs
+@@ -482,7 +482,14 @@ namespace Robust.Shared.Serialization
+             {
+                 return null;
+             }
+-            return PathHelpers.ExecutableRelativeFile($"strings-{hashStr}");
++            try
++            {
++                return PathHelpers.ExecutableRelativeFile($"strings-{hashStr}");
++            }
++            catch
++            {
++                return null;
++            }
+         }
+ 
+         /// <summary>
+@@ -490,14 +497,24 @@ namespace Robust.Shared.Serialization
+         /// </summary>
+         private void WriteStringCache(Stream stream)
+         {
+-            var hashStr = Convert.ToBase64String(MappedStringsHash);
+-            hashStr = ConvertToBase64Url(hashStr);
++            try
++            {
++                var hashStr = Convert.ToBase64String(MappedStringsHash);
++                hashStr = ConvertToBase64Url(hashStr);
++
++                var fileName = CacheForHash(hashStr);
++                if (fileName == null)
++                    return;
+ 
+-            var fileName = CacheForHash(hashStr)!;
+-            using var file = File.OpenWrite(fileName);
+-            stream.CopyTo(file);
++                using var file = File.OpenWrite(fileName);
++                stream.CopyTo(file);
+ 
+-            LogSzr.Debug($"Wrote string cache {hashStr}.");
++                LogSzr.Debug($"Wrote string cache {hashStr}.");
++            }
++            catch (Exception ex)
++            {
++                LogSzr.Warning($"Failed to write string cache: {ex.Message}");
++            }
+         }
+ 
+         /// <summary>
+diff --git a/Robust.Shared/SharedIoC.cs b/Robust.Shared/SharedIoC.cs
+index d743f5b..a13d203 100644
+--- a/Robust.Shared/SharedIoC.cs
++++ b/Robust.Shared/SharedIoC.cs
+@@ -43,6 +43,7 @@ namespace Robust.Shared
+             deps.Register<IRobustMappedStringSerializer, RobustMappedStringSerializer>();
+             deps.Register<ISandboxHelper, SandboxHelper>();
+             deps.Register<IManifoldManager, CollisionManager>();
++            deps.Register<Map.IMapManager, Map.MapManager>();
+             deps.Register<IVerticesSimplifier, RamerDouglasPeuckerSimplifier>();
+             deps.Register<IParallelManager, ParallelManager>();
+             deps.Register<IParallelManagerInternal, ParallelManager>();
+diff --git a/Robust.Shared/Timing/PrecisionSleep.cs b/Robust.Shared/Timing/PrecisionSleep.cs
+index 328e021..13a9d2f 100644
+--- a/Robust.Shared/Timing/PrecisionSleep.cs
++++ b/Robust.Shared/Timing/PrecisionSleep.cs
+@@ -1,4 +1,4 @@
+-﻿using System;
++using System;
+ using System.Runtime.InteropServices;
+ using System.Threading;
+ using TerraFX.Interop.Windows;
+@@ -141,7 +141,7 @@ internal sealed unsafe class PrecisionSleepLinuxNanosleep : PrecisionSleep
+ #pragma warning disable CS0649 // Field is never assigned to, and will always have its default value
+     // ReSharper disable IdentifierTypo
+     // ReSharper disable InconsistentNaming
+-    [DllImport("libc.so.6", SetLastError=true)]
++    [DllImport("libc", SetLastError=true)]
+     private static extern int nanosleep(timespec* req, timespec* rem);
+ 
+     private struct timespec
+diff --git a/Robust.Shared/Utility/ResPath.cs b/Robust.Shared/Utility/ResPath.cs
+index d5a8822..d31c031 100644
+--- a/Robust.Shared/Utility/ResPath.cs
++++ b/Robust.Shared/Utility/ResPath.cs
+@@ -1,4 +1,4 @@
+-﻿using System;
++using System;
+ using System.Diagnostics.CodeAnalysis;
+ using System.IO;
+ using System.Text;
+@@ -21,14 +21,9 @@ public readonly struct ResPath : IEquatable<ResPath>
+     ///     The separator for the file system of the system we are compiling to.
+     ///     Backslash on Windows, forward slash on sane systems.
+     /// </summary>
+-#if WINDOWS
+-    public const char SystemSeparator = '\\';
++    public static char SystemSeparator => System.IO.Path.DirectorySeparatorChar;
+ 
+-    public const string SystemSeparatorStr = @"\";
+-#else
+-    public const char SystemSeparator = '/';
+-    public const string SystemSeparatorStr = "/";
+-#endif
++    public static string SystemSeparatorStr => System.IO.Path.DirectorySeparatorChar.ToString();
+ 
+     /// <summary>
+     /// Normalized separator character. Chosen because <c>/</c> is illegal path
+@@ -495,10 +490,11 @@ public readonly struct ResPath : IEquatable<ResPath>
+     /// <summary>
+     ///     Converts a system path into a resource path.
+     /// </summary>
+-    public static ResPath FromRelativeSystemPath(string path, char newSeparator = SystemSeparator)
++    public static ResPath FromRelativeSystemPath(string path, char? newSeparator = null)
+     {
++        var sep = newSeparator ?? SystemSeparator;
+         // ReSharper disable once RedundantArgumentDefaultValue
+-        return new ResPath(path.Replace(newSeparator, '/'));
++        return new ResPath(path.Replace(sep, '/'));
+     }
+ 
+     #endregion
+diff --git a/Robust.Shared/Utility/TypeHelpers.cs b/Robust.Shared/Utility/TypeHelpers.cs
+index 8831e60..2b32873 100644
+--- a/Robust.Shared/Utility/TypeHelpers.cs
++++ b/Robust.Shared/Utility/TypeHelpers.cs
+@@ -183,23 +183,53 @@ namespace Robust.Shared.Utility
+ 
+         public static bool HasCustomAttribute<T>(this MemberInfo memberInfo) where T : Attribute
+         {
+-            return memberInfo.GetCustomAttribute<T>() != null;
++            try
++            {
++                return memberInfo.GetCustomAttribute<T>() != null;
++            }
++            catch (TypeLoadException)
++            {
++                return false;
++            }
+         }
+ 
+         public static bool HasCustomAttribute<T>(this ParameterInfo memberInfo) where T : Attribute
+         {
+-            return memberInfo.GetCustomAttribute<T>() != null;
++            try
++            {
++                return memberInfo.GetCustomAttribute<T>() != null;
++            }
++            catch (TypeLoadException)
++            {
++                return false;
++            }
+         }
+ 
+         public static bool TryGetCustomAttribute<T>(this MemberInfo memberInfo, [NotNullWhen(true)] out T? attribute)
+             where T : Attribute
+         {
+-            return (attribute = memberInfo.GetCustomAttribute<T>()) != null;
++            try
++            {
++                return (attribute = memberInfo.GetCustomAttribute<T>()) != null;
++            }
++            catch (TypeLoadException)
++            {
++                attribute = null;
++                return false;
++            }
+         }
+ 
+         public static bool TryGetCustomAttribute(this MemberInfo memberInfo, Type type, [NotNullWhen(true)] out Attribute? attribute)
+         {
+-            return (attribute = memberInfo.GetCustomAttribute(type)) != null;
++            try
++            {
++                return (attribute = memberInfo.GetCustomAttribute(type)) != null;
++            }
++            catch (TypeLoadException)
++            {
++                attribute = null;
++                return false;
++            }
+         }
+ 
+         internal static bool HasParameterlessConstructor(this Type type, BindingFlags flags = BindingFlags.Instance | BindingFlags.Public)
