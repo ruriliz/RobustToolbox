@@ -1,0 +1,30 @@
+name: Combine Mobile 277 patches
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  combine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Apply stages and generate unified patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C RobustToolbox rev-parse HEAD)" = "08a3d120b7029d03e60b44b23fed2b2659ed3224"
+          for patch in mobile-277-stage1.patch mobile-277-stage2.patch mobile-277-stage3.patch mobile-277-stage4.patch mobile-277-stage5.patch; do
+            git -C RobustToolbox apply --check "../patches/$patch"
+            git -C RobustToolbox apply "../patches/$patch"
+          done
+          git -C RobustToolbox diff --binary HEAD > mobile-277.patch
+          test -s mobile-277.patch
+          git -C RobustToolbox reset --hard HEAD
+          git -C RobustToolbox apply --check ../mobile-277.patch
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mobile-277-unified-patch
+          path: mobile-277.patch
+          if-no-files-found: error

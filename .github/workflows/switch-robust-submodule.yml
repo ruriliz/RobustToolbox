@@ -1,0 +1,27 @@
+name: Switch RobustToolbox to ruriliz fork
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  switch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          submodules: false
+      - name: Update submodule URL and commit pointer
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config -f .gitmodules submodule.RobustToolbox.url https://github.com/ruriliz/RobustToolbox.git
+          git submodule sync -- RobustToolbox
+          git submodule update --init --remote RobustToolbox
+          git add .gitmodules RobustToolbox
+          if git diff --cached --quiet; then
+            echo 'Already up to date'
+            exit 0
+          fi
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'Switch RobustToolbox submodule to ruriliz fork'
+          git push origin HEAD:${GITHUB_REF_NAME}
