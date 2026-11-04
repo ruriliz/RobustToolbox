@@ -34,11 +34,7 @@ jobs:
           set -euo pipefail
 
           for patch in \
-            mobile-277-stage1.patch \
-            mobile-277-stage2.patch \
-            mobile-277-stage3.patch \
-            mobile-277-stage4.patch \
-            mobile-277-stage5.patch
+            mobile-277.patch 
           do
             echo "::group::Applying $patch"
             git -C RobustToolbox apply \
